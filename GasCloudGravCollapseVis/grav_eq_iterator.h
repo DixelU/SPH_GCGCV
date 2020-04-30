@@ -538,7 +538,8 @@ struct quad_tree {
 				rt_sc{ { ( RANGE) * (WindX / WINDXSIZE) - centx, (RANGE) * (WindY / WINDYSIZE) - centy} };
 		pair<node*, int> cur_node = { root_node , 0 };
 		node* temp = nullptr;
-		side_size /= (_x(root_node->righttop_corner) - _x(root_node->leftbottom_corner));
+		double size = (_x(root_node->righttop_corner) - _x(root_node->leftbottom_corner));
+		side_size /= size;
 		while (true) {
 			if (cur_node.first) {
 				if (cur_node.second<draw_level && cur_node.first->particles_count_in_subtrees 
@@ -606,7 +607,7 @@ struct quad_tree {
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
 						auto a = (pr + pg + pb) * 0.15;
 
-						glPointSize(cur_node.first->mass_center.radius * 2 * side_size);
+						glPointSize(side_size * 2 * cur_node.first->mass_center.radius);
 						glColor4f(pr, pg, pb, 0.05 + 0.05 * visited + a);
 						glBegin(GL_POINTS);
 						glVertex2f(_x(position), _y(position));
@@ -732,7 +733,7 @@ struct grav_eq_processor {
 		buffer(size),
 		heat_capacity(1.01),
 		polytropic_coef(1.67),
-		time_step(0.004), flickering(false), reporting(false), halt_velocity(false),
+		time_step(0.004), flickering(true), reporting(false), halt_velocity(false),
 		num_of_threads(max(std::thread::hardware_concurrency() - 2, 1)),
 		__size(size)
 	{
@@ -820,7 +821,7 @@ struct grav_eq_processor {
 	}
 
 	inline static point barnes_hutt_gravity(node* cur_node) {
-		constexpr double error_edge_squared = 0.05;
+		constexpr double error_edge_squared = 0.01;
 		const particle current = cur_node->mass_center;
 		point gravitational_force = { 0,0 };
 		auto get_squared_error = [](const particle& cur, node* check_node) {
@@ -926,7 +927,7 @@ struct grav_eq_processor {
 			auto inner_node_density = get_density_at(it_node, *corad_vector1);
 			auto inner_node_energy = get_energy_at(it_node, *corad_vector1, *corad_vector2);
 			auto inner_node_pressure = get_pressure(inner_node_density, inner_node_energy, polytropic_coef, heat_capacity);
-			auto local_visc_tensor = visc_tensor(it_node->mass_center, inner_node_energy, inner_node_density);
+			auto local_visc_tensor = 0*visc_tensor(it_node->mass_center, inner_node_energy, inner_node_density);
 			auto core_gradient = grav_eq_utils::pressure_core_gradient(pos_difference, max_radius);
 
 			//local_visc_tensor = ((local_visc_tensor > 0) ? 1 : -1)* std::sqrt(std::abs(local_visc_tensor));
@@ -944,7 +945,7 @@ struct grav_eq_processor {
 
 			dE +=
 				it_node->mass_center.mass * vel_difference * (
-					0*local_visc_tensor +
+					local_visc_tensor +
 					inner_node_pressure / (inner_node_density * inner_node_density) + 
 					cur_pressure / (cur_density*cur_density)
 				) * core_gradient;
@@ -969,8 +970,9 @@ struct grav_eq_processor {
 		double local_time_step = time_step;
 #define is_variable_timestep
 #ifdef is_variable_timestep
+		double min_cfl = INFINITY;
+		local_time_step = time_step/(std::pow(2,std::log2(std::ceil(time_step/cfl_time))));
 		do {
-			local_time_step = min(time_step, std::abs(cfl_time / 1.667));
 #endif
 			//if(local_time_step != time_step)
 				//std::cout << local_time_step << endl;
@@ -996,10 +998,10 @@ struct grav_eq_processor {
 
 			local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5;
 			local_prt.velocity = initial_vel + local_time_step * ((1. / 3) * n_ans.dV + (5. / 6) * ans.dV - (1. / 6) * local_prt.acceleration);
-			cfl_time = ans.dT_CFL;
 			time_elapsed += local_time_step;
 
 #ifdef is_variable_timestep
+			min_cfl = min(ans.dT_CFL, min_cfl);
 		} while (time_elapsed<min(cfl_time, local_time_step));
 #endif
 		local_prt.cfl_time = cfl_time;
