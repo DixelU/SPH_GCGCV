@@ -27,24 +27,6 @@ using p_lambda = std::function<point(double, const point&)>;
 using d_lambda = std::function<double(double, double)>;
 
 namespace grav_eq_utils {
-	template<typename T> struct Locker {
-	private:
-		T abc;
-		recursive_mutex mtx;
-	public:
-		void lock() {
-			mtx.lock();
-		}
-		void unlock() {
-			mtx.unlock();
-		}
-		T& operator*() {
-			return abc;
-		}
-		const T& operator*() const {
-			return abc;
-		}
-	};
 	inline bool square_n_circle_intersection(const point& lb_sq, const point& rt_sq, const point& c_cen_pos, double radius)	{
 		// clamp(value, min, max) - limits value to the range min..max
 		point closest = { clamp(_x(c_cen_pos), _x(lb_sq), _x(rt_sq)) , clamp(_y(c_cen_pos), _y(lb_sq), _y(rt_sq)) };
@@ -282,134 +264,38 @@ struct node {
 };
 
 
-//not an iterator, more of searching
+//some time before it was an object...
 //not more than O(logN) in case of *not specifically built tree*
-struct radius_node_catcher {
-	std::vector<node*>* rad_nodes;
-	std::vector<node*>::iterator it;
-	radius_node_catcher(node* center, double radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
-		point source = (rsv_source)? *rsv_source:center->mass_center.position;
-		while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
-			center = center->parent;
-		rad_nodes->clear();
-		std::stack<node*> cur_nodes;
-		node* cur_node = center;
-		node** ptemp = &center;
-		while (true) {
-			if (cur_node) {
-				if (cur_node->particles_count_in_subtrees ) {
-					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
-						if ( *(ptemp = cur_node->get_dptr(i)) &&
-							grav_eq_utils::square_n_circle_intersection((*ptemp)->leftbottom_corner, (*ptemp)->righttop_corner, source, radius)) 
-							cur_nodes.push(*ptemp);
-					}
-				}
-				else if(std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position)) {
-					rad_nodes->push_back(cur_node);
-				}
-			}
-			if (cur_nodes.size()) {
-				cur_node = cur_nodes.top();
-				cur_nodes.pop();
-			}
-			else
-				break;
-		}
-		//printf("radius_nodes: %i\n", rad_nodes->size());
-	}
-
-	inline const node& operator*() {
-		if (it != rad_nodes->end())
-			return **it;
-		else
-			nullptr;
-	}
-
-	inline const node& operator++() {
-		decltype(it) local_it;
-		if (it != rad_nodes->end()) {
-			(it++);
-			local_it = it;
-		}
-		return **local_it;
-	}
-};
-
-struct cone_node_extended_iterator {
-	using positioning = node::positioning;
-	node* cur_node;
-	node* begin_node;
-	node* children[3];
-	int child_counter;
-	int cur_child;
-	cone_node_extended_iterator(node* begin) {
-		begin_node = begin;
-		cur_node = begin;
-		zero_children();
-		children[2] = begin;
-		child_counter = 3;
-		cur_child = 2;
-	}
-	inline void zero_children() {
-		child_counter = 0;
-		cur_child = 0;
-		children[0] = nullptr;
-		children[1] = nullptr;
-		children[2] = nullptr;
-	}
-	inline void push_child(node* child) {
-		switch (child_counter) {
-		case 0:
-			children[0] = child;
-			break;
-		case 1:
-			children[1] = child;
-			break;
-		case 2:
-			children[2] = child;
-			break;
-		default:
-			throw std::exception("Cannot push more than 3 children!");
-			return;
-		}
-		child_counter++;
-	}
-	const node& operator*() const {
-		return *children[cur_child];
-	}
-	node* get_cur_child() const {
-		return children[cur_child];
-	}
-	bool is_iteratable() const {
-		return cur_child < child_counter;
-	}
-	//equivalent of ++it
-	node& operator++() {
-		node* temp = nullptr;
-		bool flag = true;
+inline void radius_node_catcher(node* center, double radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
+	point source = (rsv_source)? *rsv_source:center->mass_center.position;
+	while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
+		center = center->parent;
+	rad_nodes->clear();
+	std::stack<node*> cur_nodes;
+	node* cur_node = center;
+	node** ptemp = &center;
+	while (true) {
 		if (cur_node) {
-			do {
-				cur_child++;
-			} while (cur_child < child_counter);
-			while (cur_child >= child_counter && cur_node->parent) {
-				if (flag) {
-					flag = false;
-					zero_children();
+			if (cur_node->particles_count_in_subtrees ) {
+				for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
+					if ( *(ptemp = cur_node->get_dptr(i)) &&
+						grav_eq_utils::square_n_circle_intersection((*ptemp)->leftbottom_corner, (*ptemp)->righttop_corner, source, radius)) 
+						cur_nodes.push(*ptemp);
 				}
-				cur_node = cur_node->parent;
-				for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++)
-					if ((temp = cur_node->get(i)) &&
-						!grav_eq_utils::point_in_square(temp->leftbottom_corner, temp->righttop_corner, begin_node->mass_center.position)
-						) {
-						push_child(temp);
-					}
+			}
+			else if(std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position)) {
+				rad_nodes->push_back(cur_node);
 			}
 		}
+		if (cur_nodes.size()) {
+			cur_node = cur_nodes.top();
+			cur_nodes.pop();
+		}
 		else
-			throw std::exception("Empty node return from cone_node_iterator\n");
-		return *(children[cur_child]);
+			break;
 	}
-};
+	//printf("radius_nodes: %i\n", rad_nodes->size());
+}
 
 struct quad_tree {
 	//node*, node* = (temp,cur_node)
@@ -489,16 +375,16 @@ struct quad_tree {
 		swap_prevention.unlock();
 	}
 
-	inline node** pseudorecursive_push(node* nd, const particle& prt, unsigned char level = 0) {
+	inline node** push(const particle& prt, unsigned char level = 0) {
 		constexpr unsigned char max_level = 50;
 		using namespace grav_eq_utils;
 		node::positioning prt_pos = node::positioning::null; 
 		node** temp = nullptr;
 		locker.lock();
+		node* nd = root_node;
 	prp_begining:
-		if (!nd || !nd->point_is_inside(prt.position)) {
+		if (!nd || !nd->point_is_inside(prt.position)) 
 			goto prp_ending;
-		}
 
 		if (std::abs(nd->mass_center.mass) <= epsilon || 
 			(nd->mass_center.position - prt.position).norma2() < epsilon * epsilon || 
@@ -708,6 +594,55 @@ public:
 	}
 };
 
+
+
+struct grav_eq_processor {
+	mutable std::vector<vecnode> threads_desired_roots;
+	mutable std::stack <pair<node*, int>> _subdivision_cur_nodes;
+	mutable std::vector<std::pair<int, node*>> _subdivision_roots;
+	mutable std::vector<pooled_thread*> threads;
+	const size_t num_of_threads;
+
+	double heat_capacity;
+	double polytropic_coef;
+	double time_step;
+	const double __size;
+	quad_tree current, buffer;
+	std::mutex buffer_mutex;
+	std::mutex pre_swap;
+	std::mutex pause;
+	bool is_paused;
+	bool flickering;
+	bool reporting;
+	bool halt_velocity;
+
+	grav_eq_processor(const vector<particle>& input, double size);
+
+	struct iteration_result {
+		point dV;
+		double dE;
+		double dR;
+		int interactions_count;
+		double dT_CFL;
+	};
+
+	inline static double get_density_at(node* begin, vecnode& reserved_rad_nodes, particle* rsv_part = nullptr);
+	inline static double get_energy_at(node* begin, vecnode& reserved_rad_nodes, vecnode& reserved_drn, particle* rsv_part = nullptr);
+	inline static point grav_force(const particle& center, const particle& distant_prt);
+	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const double error_edge_squared);
+	inline static double get_pressure(double density, double energy, double polytropic_coef, double heat_capacity);
+	inline static bool is_beyond_radius(const point& dist, double radius);
+
+	inline iteration_result iterate_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
+		const double heat_capacity, const double polytropic_coef, const double time_step);
+	inline particle iterate_over_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
+		const double heat_capacity, const double polytropic_coef, const double time_step);
+	inline void iterate_subtree(node* subtree_root, std::stack<node*>* cur_nodes, vecnode* rad_nodes, vecnode* first_corad, vecnode* second_corad);
+	inline void start_single_thread();
+	inline void subdivide_tree();
+	inline void start_threads();
+};
+
 struct grav_eq_processor {
 	mutable std::vector<vecnode> threads_desired_roots;
 	mutable std::stack <pair<node*, int>> _subdivision_cur_nodes;
@@ -743,12 +678,12 @@ struct grav_eq_processor {
 			threads_desired_roots.push_back(std::vector<node*>());
 
 		for (auto& prt : input) 
-			current.pseudorecursive_push(current.root_node,prt);
+			current.push(prt);
 	}
 
 	inline static double get_density_at(node* begin, vecnode& reserved_rad_nodes, particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		radius_node_catcher rnc(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
+		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
 		double sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
@@ -762,7 +697,7 @@ struct grav_eq_processor {
 
 	inline static double get_energy_at(node* begin, vecnode& reserved_rad_nodes, vecnode& reserved_drn, particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		radius_node_catcher rnc(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
+		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
 		double sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
@@ -819,7 +754,7 @@ struct grav_eq_processor {
 		constexpr double big_C_coef = 8.3;
 		return (heat_capacity - 1) * density * energy + big_C_coef*(polytropic_coef / 3. + 1. - heat_capacity) * std::pow(std::abs(density), polytropic_coef / 3. + 1.);
 	}
-
+	/*
 	inline static point barnes_hutt_gravity(node* cur_node) {
 		constexpr double error_edge_squared = 0.01;
 		const particle current = cur_node->mass_center;
@@ -839,7 +774,7 @@ struct grav_eq_processor {
 		}
 		return gravitational_force;
 	}
-
+	*/
 	inline static bool is_beyond_radius(const point& dist, double radius) {
 		return (dist.norma2() > radius* radius);
 	}
@@ -1028,7 +963,7 @@ struct grav_eq_processor {
 						cur_node->mass_center.visited = flickering;
 						if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
 							buffer_mutex.lock();
-							buffer.pseudorecursive_push(buffer.root_node, prt); 
+							buffer.push(prt); 
 							buffer_mutex.unlock();
 						}
 						else
