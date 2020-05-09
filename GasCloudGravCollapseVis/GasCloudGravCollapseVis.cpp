@@ -2669,7 +2669,7 @@ struct SPHAdapter : FieldAdapter {
 	grav_eq_processor* gep;
 	draw_type::dt draw_type;
 	SPHAdapter(grav_eq_processor* gep, float x, float y, float side_size, float particle_size, float brightness) :
-		FieldAdapter(nullptr, x, y, side_size, particle_size, brightness), gep(gep), draw_type(draw_type::dt::density), draw_level(15), extra_flare(false), edge_drawer(false), point_drawer(false), ext_draw(true){ }
+		FieldAdapter(nullptr, x, y, side_size, particle_size, brightness), gep(gep), draw_type(draw_type::dt::density), draw_level(15), extra_flare(false), edge_drawer(false), point_drawer(false), ext_draw(false){ }
 	void Draw() override {
 		gep->pre_swap.lock();
 		gep->current.draw(draw_level, { x,y }, side_size, pixel_size, brightness, draw_type, extra_flare, edge_drawer, point_drawer, ext_draw);
@@ -2759,7 +2759,7 @@ void mDisplay() {
 
 		constexpr double size = 1000;
 		constexpr int size_fraction = 2;
-		constexpr int amount = 10000;
+		constexpr int amount = 1000;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
@@ -2771,7 +2771,7 @@ void mDisplay() {
 				temp,
 				(point{ -temp[1],temp[0] }) * 0,
 				{0,0},
-				10, 0.1, 0, 1
+				100, 0.1, 0, 1
 			));
 		}
 
