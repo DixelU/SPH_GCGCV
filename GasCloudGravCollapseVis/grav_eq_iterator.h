@@ -620,6 +620,8 @@ struct grav_eq_processor {
 	double heat_capacity;
 	double polytropic_coef;
 	double time_step;
+	double local_time_step;
+	double total_time;
 	const double __size;
 	quad_tree current, buffer;
 	std::mutex buffer_mutex;
@@ -637,7 +639,9 @@ struct grav_eq_processor {
 		polytropic_coef(1.67),
 		time_step(0.004), flickering(true), reporting(false), halt_velocity(false),
 		num_of_threads(max(std::thread::hardware_concurrency() - 2, 1)),
-		__size(size)
+		__size(size),
+		local_time_step(time_step), 
+		total_time(0)
 	{
 		is_paused = false;
 
@@ -754,11 +758,6 @@ struct grav_eq_processor {
 
 		point gravity = barnes_hutt_force_in_subtree(cur_node, current_prt, error_edge_squared);
 
-		auto speed_of_sound = [&](double polytropic_coef, double energy) {
-			constexpr double tuning_big_constant = 8.3;//8.3
-			return std::sqrt(std::abs((1. + 1. / polytropic_coef) * tuning_big_constant * energy));
-		};
-
 		double dR = 0;
 		double dE = 0;
 
@@ -817,9 +816,9 @@ struct grav_eq_processor {
 
 		nabla_velocity = -nabla_velocity / cur_density;
 		delta_time_CFL = min(sqrt(current_prt.radius / dV.norma()), 
-			min(courant_number * current_prt.radius / (current_prt.velocity.norma()), 
-				courant_number * current_prt.radius /
-			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2 * (cur_energy + 0.5 * max_mu))
+			min(courant_number * current_prt.radius / (current_prt.velocity.norma()),
+				abs(courant_number * current_prt.radius /
+			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2 * (cur_energy + 0.5 * max_mu)))
 			));
 		
 		//dE *= (polytropic_coef - 1) / std::pow(std::abs(cur_density), polytropic_coef - 1) * (cur_density > 0 ? 1 : -1);
@@ -868,7 +867,7 @@ struct grav_eq_processor {
 #ifdef is_variable_timestep
 			/*min_cfl = min(ans.dT_CFL, min_cfl);
 		} while (time_elapsed<min(cfl_time, local_time_step));*/
-		local_prt.cfl_time = cfl_time;
+		local_prt.cfl_time = min(ans.dT_CFL, n_ans.dT_CFL);
 #endif
 		return local_prt;
 	}
@@ -889,7 +888,7 @@ struct grav_eq_processor {
 				}
 				else {
 					if (std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && !cur_node->particles_count_in_subtrees) {
-						auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, time_step);
+						auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
 						cur_node->mass_center.visited = flickering;
 						if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
 							buffer_mutex.lock();
@@ -920,8 +919,9 @@ struct grav_eq_processor {
 			while (true) {
 				printf("%i particles\n", current.root_node->particles_count_in_subtrees);
 #ifdef is_variable_timestep
-				printf("cfl_time: %lf\n", current.root_node->mass_center.cfl_time);
-				time_step = min(current.root_node->mass_center.cfl_time, time_step);
+				printf("cfl_time: %lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
+				local_time_step = min(current.root_node->mass_center.cfl_time, local_time_step);
+				total_time += local_time_step;
 #endif
 				//Sleep(5000);
 				iterate_subtree(current.root_node, &cur_nodes, &rad_nodes, &first_corad, &second_corad);
@@ -954,8 +954,9 @@ struct grav_eq_processor {
 		printf("%i particles\n", current.root_node->particles_count_in_subtrees);
 
 #ifdef is_variable_timestep
-		printf("cfl_time: %lf\n", current.root_node->mass_center.cfl_time);
-		time_step = min(current.root_node->mass_center.cfl_time, time_step);
+		printf("cfl_time: %lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
+		local_time_step = min(current.root_node->mass_center.cfl_time, time_step);
+		total_time += local_time_step;
 #endif
 
 		while (true) {
