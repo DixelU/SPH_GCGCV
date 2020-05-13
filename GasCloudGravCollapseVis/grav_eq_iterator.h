@@ -637,7 +637,7 @@ struct grav_eq_processor {
 		buffer(size),
 		heat_capacity(1.01),
 		polytropic_coef(1.67),
-		time_step(0.004), flickering(true), reporting(false), halt_velocity(false),
+		time_step(0.004), flickering(false), reporting(false), halt_velocity(false),
 		num_of_threads(max(std::thread::hardware_concurrency() - 2, 1)),
 		__size(size),
 		local_time_step(time_step), 
@@ -891,6 +891,11 @@ struct grav_eq_processor {
 						auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
 						cur_node->mass_center.visited = flickering;
 						if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
+							/*if (grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
+								prt.velocity = -1 * prt.velocity;
+								prt.position[0] = clamp(prt.position[0], buffer.root_node->leftbottom_corner[0], buffer.root_node->righttop_corner[0]);
+								prt.position[1] = clamp(prt.position[1], buffer.root_node->leftbottom_corner[1], buffer.root_node->righttop_corner[1]);
+							}*/
 							buffer_mutex.lock();
 							buffer.push(prt); 
 							buffer_mutex.unlock();
