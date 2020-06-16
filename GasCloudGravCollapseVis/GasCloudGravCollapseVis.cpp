@@ -2757,9 +2757,9 @@ void mDisplay() {
 	if (FIRSTBOOT) {
 		FIRSTBOOT = 0;
 
-		constexpr double size = 1000;
-		constexpr int size_fraction = 2;
-		constexpr int amount = 1000;
+		constexpr double size = 100;
+		constexpr double size_fraction = 1.535;
+		constexpr int amount = 1280;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
@@ -2768,10 +2768,10 @@ void mDisplay() {
 			if (temp.norma() > size / size_fraction)
 				continue;
 			vec.push_back(particle(
-				temp,
-				(point{ -temp[1],temp[0] }) * 0,
+				temp*0.75,
+				(point{ -temp[1],temp[0] }) * 0.0,
 				{0,0},
-				100, 0.1, 0, 1
+				100  /* * t + 7.4365*/, 0.1, 0, 1
 			));
 		}
 

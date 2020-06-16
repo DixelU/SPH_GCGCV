@@ -5,6 +5,7 @@
 #include <vector>
 #include <functional>
 #include <atomic>
+#include <chrono>
 #include "field_vis.h"
 #include "weird_hacks.h"
 #include "consts.h"
@@ -16,6 +17,7 @@
 #include "allocator.h"
 
 	#define is_variable_timestep // uncomment to push it working again...
+	#define measuring_performance
 
 using namespace std;
 using point = Point<2>;
@@ -76,7 +78,7 @@ namespace grav_eq_utils {
 	}
 	inline double inverse_pressure_core(double d, double h) {
 		if (0 <= d && d <= h)
-			return h - std::pow(h * h * h * h * d / 4, 1. / 3);
+			return h - std::pow(h * h * h * h * d / 4., 1. / 3.);
 		else return 0;
 	}
 };
@@ -128,7 +130,7 @@ struct particle {
 	}
 	inline bool operator==(const particle& prt) const {
 		using namespace grav_eq_utils;
-		return (position - prt.position).norma() < epsilon && (velocity - prt.velocity).norma() < epsilon;
+		return ((position - prt.position).norma2() < epsilon * epsilon) && ((velocity - prt.velocity).norma2() < epsilon * epsilon);
 	}
 	//inverse to operator-
 	inline particle operator+(const particle& prt) const {
@@ -148,6 +150,7 @@ struct particle {
 		);
 	}
 	//inverse to operator+
+	/*
 	inline particle operator-(const particle& prt) const {
 		double ratio = mass / (mass - prt.mass);
 		return particle(
@@ -162,13 +165,13 @@ struct particle {
 			, cfl_time
 #endif
 		);
-	}
+	}*/
 	inline particle operator+=(const particle& prt) {
 		return ((*this) = (*this) + prt);
 	}
-	inline particle operator-=(const particle& prt) {
+	/*inline particle operator-=(const particle& prt) {
 		return ((*this) = (*this) - prt);
-	}
+	}*/
 };
 
 
@@ -632,6 +635,11 @@ struct grav_eq_processor {
 	bool reporting;
 	bool halt_velocity;
 
+#ifdef measuring_performance
+	std::chrono::high_resolution_clock::time_point last_iteration;
+#endif // performance_measuring
+
+
 	grav_eq_processor(const vector<particle>& input, double size) :
 		current(size),
 		buffer(size),
@@ -642,6 +650,9 @@ struct grav_eq_processor {
 		__size(size),
 		local_time_step(time_step), 
 		total_time(0)
+#ifdef measuring_performance
+		, last_iteration(std::chrono::high_resolution_clock::now())
+#endif
 	{
 		is_paused = false;
 
@@ -693,20 +704,22 @@ struct grav_eq_processor {
 	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const double error_edge_squared) {
 		point gravitational_force = { 0,0 };
 		std::stack<node*> cur_nodes;
+		constexpr bool is_real_gravity = false;
 		auto get_squared_error = [](const particle& cur, node* check_node) {
 			return 0.5 * (check_node->leftbottom_corner - check_node->righttop_corner).norma2() / (cur.position - check_node->mass_center.position).norma2();
 		};
 		node** ptemp;
 		while (true) {
 			if (cur_node) {
-				if (cur_node->particles_count_in_subtrees && get_squared_error(current,cur_node)>=error_edge_squared) {
+				if (cur_node->particles_count_in_subtrees &&
+					( is_real_gravity || get_squared_error(current,cur_node) >= error_edge_squared)) {
 					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 						if (*(ptemp = cur_node->get_dptr(i))) {
 							cur_nodes.push(*ptemp);
 						}
 					}
 				}
-				else {
+				else if ((current.position - cur_node->mass_center.position).norma2() >= pow(grav_eq_utils::epsilon,2)) {
 					gravitational_force +=
 						grav_force(current, cur_node->mass_center);
 				}
@@ -834,12 +847,7 @@ struct grav_eq_processor {
 		double local_time_step = time_step;
 #ifdef is_variable_timestep
 		double cfl_time = local_prt.cfl_time;
-		/*double min_cfl = INFINITY;
-		local_time_step = time_step/(std::pow(2,std::log2(std::ceil(time_step/cfl_time))));
-		do {*/
 #endif
-			//if(local_time_step != time_step)
-				//std::cout << local_time_step << endl;
 			auto ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, heat_capacity, polytropic_coef, local_time_step);
 			local_prt.energy += local_time_step * ans.dE;
 			local_prt.interactions_count = ans.interactions_count;
@@ -865,8 +873,6 @@ struct grav_eq_processor {
 			time_elapsed += local_time_step;
 
 #ifdef is_variable_timestep
-			/*min_cfl = min(ans.dT_CFL, min_cfl);
-		} while (time_elapsed<min(cfl_time, local_time_step));*/
 		local_prt.cfl_time = min(ans.dT_CFL, n_ans.dT_CFL);
 #endif
 		return local_prt;
@@ -891,11 +897,11 @@ struct grav_eq_processor {
 						auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
 						cur_node->mass_center.visited = flickering;
 						if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
-							/*if (grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
+							if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
 								prt.velocity = -1 * prt.velocity;
 								prt.position[0] = clamp(prt.position[0], buffer.root_node->leftbottom_corner[0], buffer.root_node->righttop_corner[0]);
 								prt.position[1] = clamp(prt.position[1], buffer.root_node->leftbottom_corner[1], buffer.root_node->righttop_corner[1]);
-							}*/
+							}
 							buffer_mutex.lock();
 							buffer.push(prt); 
 							buffer_mutex.unlock();
@@ -903,8 +909,6 @@ struct grav_eq_processor {
 						else
 							printf("nan detected\n");
 					}
-					//current.root_node = t;
-					//printf("asd");
 				}
 			}
 			if (cur_nodes->size()) {
@@ -915,32 +919,6 @@ struct grav_eq_processor {
 			else
 				break;
 		}
-	}
-
-	inline void start_single_thread() {
-		std::thread proc([&]() {
-			vecnode rad_nodes, first_corad, second_corad;
-			std::stack <node*> cur_nodes;
-			while (true) {
-				printf("%i particles\n", current.root_node->particles_count_in_subtrees);
-#ifdef is_variable_timestep
-				printf("cfl_time: %lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
-				local_time_step = min(current.root_node->mass_center.cfl_time, local_time_step);
-				total_time += local_time_step;
-#endif
-				//Sleep(5000);
-				iterate_subtree(current.root_node, &cur_nodes, &rad_nodes, &first_corad, &second_corad);
-				//Sleep(50000000);
-				pause.lock();
-				pause.unlock();
-				pre_swap.lock();
-				current.clear();
-				current.swap(buffer);
- 				pre_swap.unlock();
-				//Sleep(5000);
-			}
-		});
-		proc.detach();
 	}
 
 	inline void subdivide_tree() {
@@ -961,8 +939,17 @@ struct grav_eq_processor {
 #ifdef is_variable_timestep
 		printf("cfl_time: %lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
 		local_time_step = min(current.root_node->mass_center.cfl_time, time_step);
-		total_time += local_time_step;
+#else
+		printf("total_time: %lf\n", total_time);
+		local_time_step = time_step;
 #endif
+		total_time += local_time_step;
+#ifdef measuring_performance
+		auto now = std::chrono::high_resolution_clock::now();
+		auto difference = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_iteration);
+		last_iteration = now;
+		printf("Delta time: %lf\n", difference.count());
+#endif // measuring_performance
 
 		while (true) {
 			if (cur_node.first) {
