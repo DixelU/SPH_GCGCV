@@ -17,7 +17,7 @@
 #include "allocator.h"
 
 	#define is_variable_timestep // uncomment to push it working again...
-	#define measuring_performance
+	//#define measuring_performance
 
 using namespace std;
 using point = Point<2>;
@@ -35,7 +35,7 @@ namespace grav_eq_utils {
 		// clamp(value, min, max) - limits value to the range min..max
 		point closest = { clamp(_x(c_cen_pos), _x(lb_sq), _x(rt_sq)) , clamp(_y(c_cen_pos), _y(lb_sq), _y(rt_sq)) };
 		point difference = c_cen_pos - closest;
-		return difference.norma2() < radius;
+		return difference.norma2() < radius*radius;
 	}
 	inline bool point_in_square(const point& lb_sq, const point& rt_sq, const point& p_pos) {
 		point center = (rt_sq + lb_sq) * 0.5;
@@ -52,7 +52,7 @@ namespace grav_eq_utils {
 		n_vec *= radius;
 		return n_vec >= lb_sq && n_vec <= rt_sq;
 	}
-	constexpr double epsilon = 0.005;
+	constexpr double epsilon = 5e-3;
 	inline double pressure_core(const point& r, double h) {
 		constexpr double constant = 4.;
 		double r_norm = r.norma();
@@ -64,7 +64,7 @@ namespace grav_eq_utils {
 	inline point pressure_core_gradient(const point& r, double h) {
 		constexpr double constant = -12.;
 		double r_norm = r.norma();
-		if (r_norm < h && std::abs(r_norm)>epsilon)
+		if (r_norm < h && std::abs(r_norm) > epsilon)
 			return constant * (r / r_norm) * std::pow(h - r_norm, 2) / std::pow(h, 4);
 		else
 			return {0,0};
@@ -118,7 +118,7 @@ struct particle {
 	bool visited;
 	particle(point position = { 0.,0. }, point velocity = { 0.,0. }, point acceleration = { 0.,0. }, double part_mass = 0., double radius = 0., double energy = 0., int amount_of_interactions = 1
 #ifdef is_variable_timestep
-		, double cfl_time = 1
+		, double cfl_time = 10
 #endif
 		) :
 		position(position), velocity(velocity), mass(part_mass), radius(radius), energy(energy), acceleration(acceleration), interactions_count(amount_of_interactions)
@@ -130,7 +130,7 @@ struct particle {
 	}
 	inline bool operator==(const particle& prt) const {
 		using namespace grav_eq_utils;
-		return ((position - prt.position).norma2() < epsilon * epsilon) && ((velocity - prt.velocity).norma2() < epsilon * epsilon);
+		return ((position - prt.position).norma2() == 0) && ((velocity - prt.velocity).norma2() == 0);
 	}
 	//inverse to operator-
 	inline particle operator+(const particle& prt) const {
@@ -237,9 +237,14 @@ struct node {
 	node(node* parent, const particle& p) : node(parent, get_positioning(parent, p.position)) {
 		mass_center = p;
 	}
-	inline static positioning get_positioning(node* nd, const point& pos) {
-		if (!nd || !nd->point_is_inside(pos))
+	inline static positioning get_positioning(node* nd, point pos) {
+		if (!nd)
 			return null;
+		if (!nd->point_is_inside(pos))
+		{
+			pos[0] = std::clamp(pos[0], nd->leftbottom_corner[0], nd->righttop_corner[0]);
+			pos[1] = std::clamp(pos[1], nd->leftbottom_corner[1], nd->righttop_corner[1]);
+		}
 		point center = (nd->righttop_corner + nd->leftbottom_corner) / 2.;
 		point difference = pos - center;
 		if (_x(difference) >= 0) {
@@ -282,15 +287,16 @@ struct node {
 	}
 };
 
-
 //some time before it was an object...
 //not more than O(logN) in case of *not specifically built tree*
 inline void radius_node_catcher(node* center, double radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
 	point source = (rsv_source)? *rsv_source:center->mass_center.position;
+	auto count = center->particles_count_in_subtrees;
 	while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
 		center = center->parent;
 	rad_nodes->clear();
-	std::stack<node*> cur_nodes;
+	std::vector<node*> cur_nodes;
+	cur_nodes.reserve(count + 1);
 	node* cur_node = center;
 	node** ptemp = &center;
 	while (true) {
@@ -299,16 +305,18 @@ inline void radius_node_catcher(node* center, double radius, std::vector<node*>*
 				for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 					if ( *(ptemp = cur_node->get_dptr(i)) &&
 						grav_eq_utils::square_n_circle_intersection((*ptemp)->leftbottom_corner, (*ptemp)->righttop_corner, source, radius)) 
-						cur_nodes.push(*ptemp);
+						cur_nodes.push_back(*ptemp);
 				}
 			}
-			else if(std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position)) {
+			else if(std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && 
+				grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position))
+			{
 				rad_nodes->push_back(cur_node);
 			}
 		}
 		if (cur_nodes.size()) {
-			cur_node = cur_nodes.top();
-			cur_nodes.pop();
+			cur_node = cur_nodes.back();
+			cur_nodes.pop_back();
 		}
 		else
 			break;
@@ -395,7 +403,7 @@ struct quad_tree {
 	}
 
 	inline node** push(const particle& prt, unsigned char level = 0) {
-		constexpr unsigned char max_level = 50;
+		constexpr unsigned short max_level = 100;
 		using namespace grav_eq_utils;
 		node::positioning prt_pos = node::positioning::null; 
 		node** temp = nullptr;
@@ -405,8 +413,8 @@ struct quad_tree {
 		if (!nd || !nd->point_is_inside(prt.position)) 
 			goto prp_ending;
 
-		if (std::abs(nd->mass_center.mass) <= epsilon || 
-			(nd->mass_center.position - prt.position).norma2() < epsilon * epsilon || 
+		if (std::abs(nd->mass_center.mass) == 0 || 
+			(nd->mass_center.position - prt.position).norma2() == 0 || 
 			level >= max_level) {
 			nd->mass_center += prt;
 			goto prp_ending;
@@ -418,7 +426,7 @@ struct quad_tree {
 			if (!*temp) {
 				*temp = new node(nd, mc_pos);
 				(*temp)->mass_center = nd->mass_center;
-				nd->particles_count_in_subtrees++;
+				//nd->particles_count_in_subtrees++;
 			}
 		}
 
@@ -436,34 +444,35 @@ struct quad_tree {
 		return temp;
 	}
 
-	inline void draw(int draw_level, const point& center, double side_size, float points_size, float value_decrimemnt, draw_type::dt type = draw_type::dt::density, bool extra_flare = false, bool edge_drawer = false, bool draw_points = false, bool extended_draw = false) {
+	inline void draw(int draw_level, const point& center, double side_size, float points_size, float value_decrimemnt,
+		draw_type::dt type = draw_type::dt::density, bool extra_flare = false, bool edge_drawer = false, bool draw_points = false, bool extended_draw = false) {
 		swap_prevention.lock();
-		std::stack <pair<node*,int>> cur_nodes;
-		point	lb_sc{ (0 - RANGE) * (WindX / WINDXSIZE) - centx, (0 - RANGE) * (WindY / WINDYSIZE) - centy}, 
-				rt_sc{ { ( RANGE) * (WindX / WINDXSIZE) - centx, (RANGE) * (WindY / WINDYSIZE) - centy} };
+		std::vector<pair<node*,int>> cur_nodes;
+		cur_nodes.reserve(1000);
 		pair<node*, int> cur_node = { root_node , 0 };
 		node* temp = nullptr;
 		double size = (_x(root_node->righttop_corner) - _x(root_node->leftbottom_corner));
-		side_size /= size;
+		auto relative_size = side_size / size;
+		auto scale = BEG_RANGE / RANGE;
 		while (true) {
 			if (cur_node.first) {
 				if (cur_node.second<draw_level && cur_node.first->particles_count_in_subtrees 
-					// && cur_node.first->righttop_corner >= lb_sc && cur_node.first->leftbottom_corner <= rt_sc // positioning on screen
+					//&& cur_node.first->righttop_corner >= lb_sc && cur_node.first->leftbottom_corner <= rt_sc // positioning on screen
 					) {
 					for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
 						if ((temp = cur_node.first->get(i))) {
-							cur_nodes.push({ temp, cur_node.second + 1 });
+							cur_nodes.push_back({ temp, cur_node.second + 1 });
 						}
 					}
 				}
 				else {
-					point lb = (cur_node.first->leftbottom_corner * side_size + center);
-					point rt = (cur_node.first->righttop_corner * side_size + center);
+					point lb = (cur_node.first->leftbottom_corner * relative_size + center);
+					point rt = (cur_node.first->righttop_corner * relative_size + center);
 					double particle_value = 0;
 					double node_value = 0;
 					double ratio = (cur_node.first->mass_center.radius * cur_node.first->mass_center.radius) / std::pow(_x(cur_node.first->leftbottom_corner - cur_node.first->righttop_corner), 2);
 					bool visited = cur_node.first->mass_center.visited;
-					auto position = (cur_node.first->mass_center.position * side_size + center);
+					auto position = (cur_node.first->mass_center.position * relative_size + center);
 					switch (type) {
 					case draw_type::dt::density: // std::pow(_x(cur_node.first->leftbottom_corner - cur_node.first->righttop_corner), 2)
 						particle_value = cur_node.first->mass_center.mass / (cur_node.first->mass_center.radius);
@@ -503,16 +512,16 @@ struct quad_tree {
 					}
 					if(extended_draw){
 						draw_smooth_circle(_x(position), _y(position), 
-							cur_node.first->mass_center.radius*side_size, 
+							cur_node.first->mass_center.radius * relative_size,
 							particle_value * value_decrimemnt,
-							1.10, 60
+							1.10, 15
 						);
 					}
 					else {
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
 						auto a = (pr + pg + pb) * 0.15;
-
-						glPointSize(side_size * 2 * cur_node.first->mass_center.radius);
+						auto pointSize = max(1., cur_node.first->mass_center.radius * relative_size * scale);
+						glPointSize(pointSize);
 						glColor4f(pr, pg, pb, 0.05 + 0.05 * visited + a);
 						glBegin(GL_POINTS);
 						glVertex2f(_x(position), _y(position));
@@ -529,8 +538,8 @@ struct quad_tree {
 				}
 			}
 			if (cur_nodes.size()) {
-				cur_node = cur_nodes.top();
-				cur_nodes.pop();
+				cur_node = cur_nodes.back();
+				cur_nodes.pop_back();
 			}
 			else
 				break;
@@ -615,7 +624,7 @@ public:
 
 struct grav_eq_processor {
 	mutable std::vector<vecnode> threads_desired_roots;
-	mutable std::stack <pair<node*, int>> _subdivision_cur_nodes;
+	mutable std::vector<pair<node*, int>> _subdivision_cur_nodes;
 	mutable std::vector<std::pair<int, node*>> _subdivision_roots;
 	mutable std::vector<pooled_thread*> threads;
 	const size_t num_of_threads;
@@ -646,7 +655,7 @@ struct grav_eq_processor {
 		heat_capacity(1.01),
 		polytropic_coef(1.67),
 		time_step(0.004), flickering(false), reporting(false), halt_velocity(false),
-		num_of_threads(max(std::thread::hardware_concurrency() - 2, 1)),
+		num_of_threads(max(std::thread::hardware_concurrency() - 0, 1)),
 		__size(size),
 		local_time_step(time_step), 
 		total_time(0)
@@ -703,8 +712,9 @@ struct grav_eq_processor {
 
 	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const double error_edge_squared) {
 		point gravitational_force = { 0,0 };
-		std::stack<node*> cur_nodes;
-		constexpr bool is_real_gravity = false;
+		std::vector<node*> cur_nodes;
+		cur_nodes.reserve(cur_node->particles_count_in_subtrees);
+		constexpr bool is_real_gravity = true;
 		auto get_squared_error = [](const particle& cur, node* check_node) {
 			return 0.5 * (check_node->leftbottom_corner - check_node->righttop_corner).norma2() / (cur.position - check_node->mass_center.position).norma2();
 		};
@@ -715,7 +725,7 @@ struct grav_eq_processor {
 					( is_real_gravity || get_squared_error(current,cur_node) >= error_edge_squared)) {
 					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 						if (*(ptemp = cur_node->get_dptr(i))) {
-							cur_nodes.push(*ptemp);
+							cur_nodes.push_back(*ptemp);
 						}
 					}
 				}
@@ -725,8 +735,8 @@ struct grav_eq_processor {
 				}
 			}
 			if (cur_nodes.size()) {
-				cur_node = cur_nodes.top();
-				cur_nodes.pop();
+				cur_node = cur_nodes.back();
+				cur_nodes.pop_back();
 			}
 			else
 				break;
@@ -754,7 +764,7 @@ struct grav_eq_processor {
 		const double heat_capacity, const double polytropic_coef, const double time_step) {
 		constexpr double error_edge_squared = 0.05;
 		constexpr double courant_number = 0.3;
-		constexpr bool is_complete_SPH = true;
+		constexpr bool is_complete_SPH = false;
 		node* cur_node = current.root_node; 
 		int interactions_counter = 0;
 		corad_vector1->clear();
@@ -878,9 +888,8 @@ struct grav_eq_processor {
 		return local_prt;
 	}
 
-	inline void iterate_subtree(node* subtree_root, std::stack<node*>* cur_nodes, vecnode* rad_nodes, vecnode* first_corad, vecnode* second_corad) {
-		while (cur_nodes->size())
-			cur_nodes->pop();
+	inline void iterate_subtree(node* subtree_root, std::vector<node*>* cur_nodes, vecnode* rad_nodes, vecnode* first_corad, vecnode* second_corad) {
+		cur_nodes->clear();
 		node* cur_node = subtree_root;
 		node** ptemp;
 		while (true) {
@@ -888,33 +897,46 @@ struct grav_eq_processor {
 				if (cur_node->particles_count_in_subtrees) {
 					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 						if (*(ptemp = cur_node->get_dptr(i))) {
-							cur_nodes->push(*ptemp);
+							cur_nodes->push_back(*ptemp);
 						}
 					}
 				}
-				else {
-					if (std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && !cur_node->particles_count_in_subtrees) {
-						auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
-						cur_node->mass_center.visited = flickering;
-						if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
-							if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
-								prt.velocity = -1 * prt.velocity;
-								prt.position[0] = clamp(prt.position[0], buffer.root_node->leftbottom_corner[0], buffer.root_node->righttop_corner[0]);
-								prt.position[1] = clamp(prt.position[1], buffer.root_node->leftbottom_corner[1], buffer.root_node->righttop_corner[1]);
+				else { 
+					auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
+					cur_node->mass_center.visited = flickering;
+					if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
+						if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
+							prt.position[0] = clamp(prt.position[0], 
+								buffer.root_node->leftbottom_corner[0],
+								buffer.root_node->righttop_corner[0]);
+							prt.position[1] = clamp(prt.position[1], 
+								buffer.root_node->leftbottom_corner[1],
+								buffer.root_node->righttop_corner[1]);
+							if (prt.position[0] == buffer.root_node->leftbottom_corner[0] ||
+								prt.position[0] == buffer.root_node->righttop_corner[0])
+							{
+								prt.velocity[0] *= -1;
+								prt.acceleration[0] = 0;
 							}
-							buffer_mutex.lock();
-							buffer.push(prt); 
-							buffer_mutex.unlock();
+							if (prt.position[1] == buffer.root_node->leftbottom_corner[1] ||
+								prt.position[1] == buffer.root_node->righttop_corner[1])
+							{
+								prt.velocity[1] *= -1;
+								prt.acceleration[1] = 0;
+							}
 						}
-						else
-							printf("nan detected\n");
+						buffer_mutex.lock();
+						buffer.push(prt); 
+						buffer_mutex.unlock();
 					}
+					else
+						printf("nan detected\n");
 				}
 			}
-			if (cur_nodes->size()) {
+			if (cur_node && cur_nodes->size()) {
 				cur_node->mass_center.visited = flickering;
-				cur_node = cur_nodes->top();
-				cur_nodes->pop();
+				cur_node = cur_nodes->back();
+				cur_nodes->pop_back();
 			}
 			else
 				break;
@@ -932,13 +954,13 @@ struct grav_eq_processor {
 
 		_subdivision_roots.clear();
 		while (_subdivision_cur_nodes.size()) 
-			_subdivision_cur_nodes.pop();
+			_subdivision_cur_nodes.pop_back();
 
 		printf("%i particles\n", current.root_node->particles_count_in_subtrees);
 
 #ifdef is_variable_timestep
-		printf("cfl_time: %lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
-		local_time_step = min(current.root_node->mass_center.cfl_time, time_step);
+		printf("cfl_time: %.10lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
+		local_time_step = max(min(current.root_node->mass_center.cfl_time, time_step), 1e-10);
 #else
 		printf("total_time: %lf\n", total_time);
 		local_time_step = time_step;
@@ -956,20 +978,20 @@ struct grav_eq_processor {
 				if (cur_node.second < catch_level && cur_node.first->particles_count_in_subtrees) {
 					for (quad_tree::positioning i = quad_tree::positioning::leftbottom; i < quad_tree::positioning::null; ((int&)i)++) {
 						if ((temp = cur_node.first->get(i))) {
-							_subdivision_cur_nodes.push({ temp, cur_node.second + 1 });
+							_subdivision_cur_nodes.push_back({ temp, cur_node.second + 1 });
 						}
 					}
 				}
 				else {
-					cur_am_of_particles += (!cur_node.first->particles_count_in_subtrees) + cur_node.first->particles_count_in_subtrees;
+					cur_am_of_particles += cur_node.first->particles_count_in_subtrees;
 					if (cur_am_of_particles / relation - 1 > cur_thread_num)
 						cur_thread_num++;
 					_subdivision_roots.push_back({ cur_thread_num, cur_node.first });
 				}
 			}
 			if (_subdivision_cur_nodes.size()) {
-				cur_node = _subdivision_cur_nodes.top();
-				_subdivision_cur_nodes.pop();
+				cur_node = _subdivision_cur_nodes.back();
+				_subdivision_cur_nodes.pop_back();
 			}
 			else
 				break;
@@ -995,7 +1017,7 @@ struct grav_eq_processor {
 
 				typedef struct {
 					vecnode rad_nodes, first_corad, second_corad;
-					std::stack <node*> cur_nodes;
+					std::vector <node*> cur_nodes;
 					vecnode* root_ptrs;
 					int id;
 				} thread_info;
@@ -1019,8 +1041,6 @@ struct grav_eq_processor {
 			});
 			threads.back()->sign_awaiting();
 		}
-
-		Sleep(5);
 
 		threads.push_back(new pooled_thread());//observer
 		threads.back()->set_new_awaiting_time(10);

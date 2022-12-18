@@ -23,13 +23,7 @@
 
 //#define WIN32_LEAN_AND_MEAN
 
-#include "glut.h"
-#include "freeglut.h"
-#ifndef __X64
-#pragma comment (lib, "freeglut.lib")
-#else
-#pragma comment (lib, "x64\\freeglut.lib")
-#endif
+#include <GL/freeglut.h>
 
 #include "consts.h"
 #include "field_vis.h"
@@ -2758,20 +2752,21 @@ void mDisplay() {
 		FIRSTBOOT = 0;
 
 		constexpr double size = 100;
-		constexpr double size_fraction = 1.535;
-		constexpr int amount = 1280;
+		constexpr double size_fraction = 2.5;
+		constexpr int amount = 1000;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
 			auto t = (rand() & 1 ? -1 : 1);
-			point temp = { RANDFLOAT(size / size_fraction), RANDFLOAT(size / size_fraction) };
-			if (temp.norma() > size / size_fraction)
+			point temp = { std::abs(RANDFLOAT(size / size_fraction)) * t, RANDFLOAT(size / size_fraction)};
+			auto norma = temp.norma();
+			if (norma > size / size_fraction)
 				continue;
 			vec.push_back(particle(
 				temp*0.75,
-				(point{ -temp[1],temp[0] }) * 0.0,
+				(point{ -temp[1],temp[0] }) ,
 				{0,0},
-				100  /* * t + 7.4365*/, 0.1, 0, 1
+				200 * RANDSGN + RANDFLOAT(5), 1, 0, 1
 			));
 		}
 
