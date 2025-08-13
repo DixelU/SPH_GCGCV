@@ -2759,7 +2759,7 @@ void mDisplay() {
 
 		constexpr current_float_t size = 100;
 		constexpr current_float_t size_fraction = 2.5;
-		constexpr int amount = 25000;
+		constexpr int amount = 200;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
@@ -2773,7 +2773,7 @@ void mDisplay() {
 				temp*0.75,
 				(point{ -temp[1], temp[0] }) ,
 				{0,0},
-				100000 / amount + RANDFLOAT(5), 1, 1, 1
+				400000 / amount + RANDFLOAT(5), 1, 1, 1
 			));
 		}
 

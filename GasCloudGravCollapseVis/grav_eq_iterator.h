@@ -24,7 +24,7 @@
 using current_float_t = float;
 
 using namespace std;
-using point = dixelu::point<float, 2>;
+using point = dixelu::point<current_float_t, 2>;
 
 namespace _____type_desc {
 	auto p_zero = [&](current_float_t t, const point& x) -> point { return point(); };
@@ -70,7 +70,7 @@ namespace grav_eq_utils {
 			return 0.;
 	}
 	inline point pressure_core_gradient(const point& r, current_float_t h) {
-		constexpr current_float_t constant = -12.;
+		constexpr current_float_t constant = -12.f;
 		current_float_t r_norm = r.get_norm();
 		if (r_norm < h && std::abs(r_norm) > epsilon)
 			return constant * (r / r_norm) * std::pow(h - r_norm, 2) / std::pow(h, 4);
@@ -528,7 +528,7 @@ struct quad_tree {
 					else {
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
 						auto a = (pr + pg + pb) * 0.15f;
-						auto pointSize = (std::max)(1.f, cur_node.first->mass_center.radius * relative_size * scale);
+						auto pointSize = (std::max)((current_float_t)1.f, cur_node.first->mass_center.radius * relative_size * scale);
 						glPointSize(pointSize);
 						glColor4f(pr, pg, pb, 0.05f + 0.05f * visited + a);
 						glBegin(GL_POINTS);
@@ -780,7 +780,7 @@ struct grav_eq_processor {
 	{
 		constexpr current_float_t error_edge_squared = 0.05f;
 		constexpr current_float_t courant_number = 0.3f;
-		constexpr bool is_complete_SPH = true;
+		constexpr bool is_complete_SPH = false;
 		node* cur_node = current.root_node; 
 		int interactions_counter = 0;
 		corad_vector1->clear();
@@ -820,7 +820,7 @@ struct grav_eq_processor {
 					(position_difference.get_norm2() + stabilizing_term)
 				);
 			else
-				return 0.f;
+				return (current_float_t)0.f;
 		};
 
 		auto mu = [&](const particle& prt, current_float_t inner_node_pressure, current_float_t inner_node_density)
@@ -839,7 +839,7 @@ struct grav_eq_processor {
 				return (std::max)(mu_ij, -2.0f * c_ij);  // Cap |μ_ij| ≤ 2 * c_ij
 			}
 			else {
-				return 0.0f;
+				return (current_float_t)0.0f;
 			}
 		};
 
@@ -916,17 +916,20 @@ struct grav_eq_processor {
 				abs(courant_number * current_prt.radius /
 			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2f * (cur_energy + 0.5f * max_mu)))
 		));*/
-
-		delta_time_CFL = (std::min)(
-			sqrt(current_prt.radius / (std::max)(dV.get_norm(), grav_eq_utils::epsilon)),
-			(std::min)(
-				courant_number * current_prt.radius / (std::max)(current_prt.velocity.get_norm(), grav_eq_utils::epsilon),
-				courant_number * current_prt.radius / (std::max)(
-					current_prt.radius * abs(nabla_velocity) + c_i + 1.2f * (c_i + max_mu),
-					grav_eq_utils::epsilon
+		
+		if (is_complete_SPH)
+			delta_time_CFL = (std::min)(
+				sqrt(current_prt.radius / (std::max)(dV.get_norm(), grav_eq_utils::epsilon)),
+				(std::min)(
+					courant_number * current_prt.radius / (std::max)(current_prt.velocity.get_norm(), grav_eq_utils::epsilon),
+					courant_number * current_prt.radius / (std::max)(
+						current_prt.radius * abs(nabla_velocity) + c_i + 1.2f * (c_i + max_mu),
+						grav_eq_utils::epsilon
+					)
 				)
-			)
-		);
+			);
+		else 
+			delta_time_CFL = 10.f;
 
 		//dE *= (polytropic_coef - 1) / std::pow(std::abs(cur_density), polytropic_coef - 1) * (cur_density > 0 ? 1 : -1);
 
@@ -949,9 +952,9 @@ struct grav_eq_processor {
 
 		point initial_vel = local_prt.velocity;
 		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
-			(2.f / 3) * ans.dV - (1.f / 6) * local_prt.acceleration
+			((current_float_t)2.f / 3) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration
 		));
-		local_prt.velocity += local_time_step * (1.5f * ans.dV - 0.5f * local_prt.acceleration);
+		local_prt.velocity += local_time_step * ((current_float_t)1.5f * ans.dV - (current_float_t)0.5f * local_prt.acceleration);
 
 		auto n_ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, polytropic_coef, heat_capacity, local_time_step);
 		//local_prt.energy += 0.25f * time_step * n_ans.dE;
@@ -961,11 +964,11 @@ struct grav_eq_processor {
 		local_prt.energy += 0.5f * local_time_step * (ans.dE + n_ans.dE);
 
 		local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5f;
-		local_prt.velocity = initial_vel + local_time_step * ((1.f / 3) * n_ans.dV + (5.f / 6) * ans.dV - (1.f / 6) * local_prt.acceleration);
+		local_prt.velocity = initial_vel + local_time_step * (((current_float_t)1.f / 3) * n_ans.dV + ((current_float_t)5.f / 6) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration);
 		time_elapsed += local_time_step;
 
 		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
-			(2.f / 3) * ans.dV - (1.f / 6) * local_prt.acceleration
+			((current_float_t)2.f / 3) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration
 		));
 
 #ifdef is_variable_timestep
@@ -1068,7 +1071,7 @@ struct grav_eq_processor {
 #endif
 
 #ifdef is_variable_timestep
-		local_time_step = (std::max)((std::min)(current.root_node->mass_center.cfl_time, time_step), 1e-10f);
+		local_time_step = (std::max)((std::min)(current.root_node->mass_center.cfl_time, time_step), (current_float_t)1e-10f);
 #else
 		local_time_step = time_step;
 #endif
