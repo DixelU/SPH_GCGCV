@@ -145,7 +145,7 @@ struct particle {
 			energy + prt.energy,
 			interactions_count + prt.interactions_count
 #ifdef is_variable_timestep
-			, min(cfl_time, prt.cfl_time)
+			, (std::min)(cfl_time, prt.cfl_time)
 #endif
 		);
 	}
@@ -520,7 +520,7 @@ struct quad_tree {
 					else {
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
 						auto a = (pr + pg + pb) * 0.15;
-						auto pointSize = max(1., cur_node.first->mass_center.radius * relative_size * scale);
+						auto pointSize = (std::max)(1., cur_node.first->mass_center.radius * relative_size * scale);
 						glPointSize(pointSize);
 						glColor4f(pr, pg, pb, 0.05 + 0.05 * visited + a);
 						glBegin(GL_POINTS);
@@ -655,7 +655,7 @@ struct grav_eq_processor {
 		heat_capacity(1.67),
 		polytropic_coef(1.67),
 		time_step(0.004), flickering(false), reporting(false), halt_velocity(false),
-		num_of_threads(max(std::thread::hardware_concurrency() - 0, 1)),
+		num_of_threads((std::max)(std::thread::hardware_concurrency() - 0, 1u)),
 		__size(size),
 		local_time_step(time_step), 
 		total_time(0)
@@ -678,7 +678,7 @@ struct grav_eq_processor {
 		double sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
-			auto max_radius = max(source.radius, cur_node->mass_center.radius);
+			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
 			if (is_beyond_radius(pos_difference, max_radius))
 				continue;
 			sum += cur_node->mass_center.mass * grav_eq_utils::pressure_core(pos_difference, max_radius);
@@ -692,7 +692,7 @@ struct grav_eq_processor {
 		double sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
-			auto max_radius = max(source.radius, cur_node->mass_center.radius);
+			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
 			if (is_beyond_radius(pos_difference, max_radius))
 				continue;
 			sum += 
@@ -744,10 +744,17 @@ struct grav_eq_processor {
 		return gravitational_force;
 	}
 
-	inline static double get_pressure(double density, double energy, double polytropic_coef, double heat_capacity) {
+	inline static double get_pressure__old(double density, double energy, double polytropic_coef, double heat_capacity) {
 		constexpr double big_C_coef = 8.3;
-		return (heat_capacity - 1) * density * energy + big_C_coef*(polytropic_coef / 3. + 1. - heat_capacity) * std::pow(std::abs(density), polytropic_coef / 3. + 1.);
+		return (heat_capacity - 1) * density * energy + big_C_coef * (polytropic_coef / 3. + 1. - heat_capacity) * std::pow(std::abs(density), polytropic_coef / 3. + 1.);
 	}
+
+	inline static double get_pressure(double density, double energy, double polytropic_coef, double heat_capacity) {
+		double ideal_term = (heat_capacity - 1) * density * (std::max)(energy, grav_eq_utils::epsilon);
+		double polytropic = 0.1 * pow(std::abs(density), polytropic_coef);
+		return (std::max)(ideal_term + polytropic, grav_eq_utils::epsilon);
+	}
+
 	inline static bool is_beyond_radius(const point& dist, double radius) {
 		return (dist.norma2() > radius* radius);
 	}
@@ -794,7 +801,7 @@ struct grav_eq_processor {
 		auto mu__old = [&](const particle& prt) {
 			const point velocity_difference = (current_prt.velocity - prt.velocity);
 			const point position_difference = (current_prt.position - prt.position);
-			const double radius = max(current_prt.radius, prt.radius);
+			const double radius = (std::max)(current_prt.radius, prt.radius);
 			double prod = velocity_difference * position_difference;
 			double stabilizing_term = 0.01;
 			if (prod < 0)
@@ -805,20 +812,26 @@ struct grav_eq_processor {
 				return 0.;
 		};
 
-		auto mu = [&](const particle& prt) {
+		auto mu = [&](const particle& prt, double inner_node_pressure, double inner_node_density) {
 			const point velocity_difference = (current_prt.velocity - prt.velocity);
 			const point position_difference = (current_prt.position - prt.position);
 			double h_ij = (current_prt.radius + prt.radius) / 2.0;
-			double eta2 = 0.01 * h_ij * h_ij;  // Fix: scale with h_ij^2 (eta≈0.1)
+			double eta2 = 0.01 * h_ij * h_ij;  // η = 0.1 h_ij
 			double prod = velocity_difference * position_difference;
-			if (prod < 0) 
-				return h_ij * prod / (position_difference.norma2() + eta2);
-			else
+			if (prod < 0) {
+				double mu_ij = h_ij * prod / (position_difference.norma2() + eta2);
+				double c_i = sqrt(polytropic_coef * cur_pressure / cur_density);
+				double c_j = sqrt(polytropic_coef * inner_node_pressure / inner_node_density);
+				double c_ij = (c_i + c_j) / 2.0;
+				return (std::max)(mu_ij, -2.0 * c_ij);  // Cap |μ_ij| ≤ 2 * c_ij
+			}
+			else {
 				return 0.0;
+			}
 		};
 
 		dR = current_prt.radius * (0.05 + 0.45*(is_complete_SPH)) * (1. + std::pow(particle::desired_amount_of_interactions / (current_prt.interactions_count + 1), 0.33333));
-		dR = max(dR, grav_eq_utils::epsilon * __size * 0.1);
+		dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1);
 		dR -= current_prt.radius;
 
 		for (auto& it_node : *rad_vector) {
@@ -832,38 +845,41 @@ struct grav_eq_processor {
 			auto inner_node_pressure = get_pressure(inner_node_density, inner_node_energy, polytropic_coef, heat_capacity);
 			auto core_gradient = grav_eq_utils::pressure_core_gradient(pos_difference, avg_radius);
 
-			auto mu_val = mu__old(it_node->mass_center);
-			max_mu = max(max_mu, mu_val);
-
+			double rho_ij = (cur_density + inner_node_density) / 2.0;
+			double mu_val = mu(it_node->mass_center, inner_node_pressure, inner_node_density);
 			double c_i = sqrt(polytropic_coef * cur_pressure / cur_density);
 			double c_j = sqrt(polytropic_coef * inner_node_pressure / inner_node_density);
 			double c_ij = (c_i + c_j) / 2.0;
-
-			double rho_ij = (cur_density + inner_node_density) / 2.0;
 			double Pi_ij = 0.0;
-			if (mu_val < 0)
-				Pi_ij = (-1.0 * c_ij * mu_val + 2.0 * mu_val * mu_val) / rho_ij;
+			if (mu_val < 0 && rho_ij > grav_eq_utils::epsilon)
+			{
+				Pi_ij = (-1.0 * c_ij * mu_val + 1.0 * mu_val * mu_val) / rho_ij;  // β=1.0 (reduced)
+				Pi_ij = (std::min)(Pi_ij, 10.0 * c_ij * c_ij / rho_ij);  // Cap Π_ij
+				max_mu = (std::max)(max_mu, -mu_val);
+			}
 
 			nabla_velocity +=
 				it_node->mass_center.mass * vel_difference * core_gradient;
 
 			dV += it_node->mass_center.mass * (
 					inner_node_pressure / (inner_node_density * inner_node_density) +
-					cur_pressure / (cur_density * cur_density)
+					cur_pressure / (cur_density * cur_density) +
+					Pi_ij
 				) * core_gradient;
 
 			dE +=
 				it_node->mass_center.mass * vel_difference * (
 					inner_node_pressure / (inner_node_density * inner_node_density) +
-					cur_pressure / (cur_density * cur_density) 
+					cur_pressure / (cur_density * cur_density) + 
+					0.5 * Pi_ij
 				) * core_gradient;
 
 			interactions_counter++;
 		}
 
 		nabla_velocity = -nabla_velocity / cur_density;
-		delta_time_CFL = min(sqrt(current_prt.radius / dV.norma()), 
-			min(courant_number * current_prt.radius / (current_prt.velocity.norma()),
+		delta_time_CFL = (std::min)(sqrt(current_prt.radius / dV.norma()), 
+			(std::min)(courant_number * current_prt.radius / (current_prt.velocity.norma()),
 				abs(courant_number * current_prt.radius /
 			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2 * (cur_energy + 0.5 * max_mu)))
 			));
@@ -897,7 +913,7 @@ struct grav_eq_processor {
 		//local_prt.energy += 0.25 * time_step * n_ans.dE;
 		local_prt.interactions_count = n_ans.interactions_count;
 		
-		local_prt.radius = max(local_prt.radius + 0.5 * n_ans.dR, grav_eq_utils::epsilon * __size * 0.1);
+		local_prt.radius = (std::max)(local_prt.radius + 0.5 * n_ans.dR, grav_eq_utils::epsilon * __size * 0.1);
 		local_prt.energy += 0.5 * local_time_step * (ans.dE + n_ans.dE);
 
 		local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5;
@@ -905,7 +921,7 @@ struct grav_eq_processor {
 		time_elapsed += local_time_step;
 
 #ifdef is_variable_timestep
-		local_prt.cfl_time = min(ans.dT_CFL, n_ans.dT_CFL);
+		local_prt.cfl_time = (std::min)(ans.dT_CFL, n_ans.dT_CFL);
 #endif
 		return local_prt;
 	}
@@ -982,7 +998,7 @@ struct grav_eq_processor {
 
 #ifdef is_variable_timestep
 		printf("cfl_time: %.10lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
-		local_time_step = max(min(current.root_node->mass_center.cfl_time, time_step), 1e-10);
+		local_time_step = (std::max)((std::min)(current.root_node->mass_center.cfl_time, time_step), 1e-10);
 #else
 		printf("total_time: %lf\n", total_time);
 		local_time_step = time_step;

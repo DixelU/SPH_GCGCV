@@ -2766,7 +2766,7 @@ void mDisplay() {
 				temp*0.75,
 				(point{ -temp[1],temp[0] }) ,
 				{0,0},
-				200 + RANDFLOAT(5), 1, 0, 1
+				200 + RANDFLOAT(5), 1, 1, 1
 			));
 		}
 
