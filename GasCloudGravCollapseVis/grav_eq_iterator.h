@@ -1,82 +1,90 @@
 ﻿#pragma once
-#include <cmath>
-#include <thread>
-#include <complex>
-#include <vector>
-#include <functional>
+
+#include "consts.h"
+#include "field_vis.h"
+#include "sq_matrix.h"
+#include "weird_hacks.h"
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include "field_vis.h"
-#include "weird_hacks.h"
-#include "consts.h"
-#include "multidimentional_point.h"
-
-#include <stack>
+#include <cmath>
+#include <complex>
+#include <functional>
+#include <thread>
+#include <vector>
 #include <queue>
+#include <stack>
 
 #include "allocator.h"
 
-	#define is_variable_timestep // uncomment to push it working again...
-	//#define measuring_performance
+#define is_variable_timestep // uncomment to push it working again...
+//#define measuring_performance
+
+using current_float_t = float;
 
 using namespace std;
-using point = Point<2>;
+using point = dixelu::point<float, 2>;
 
 namespace _____type_desc {
-	auto p_zero = [&](double t, const point& x) -> point { return point(); };
-	auto d_zero = [&](double t, double x) -> double { return 0.; };
+	auto p_zero = [&](current_float_t t, const point& x) -> point { return point(); };
+	auto d_zero = [&](current_float_t t, current_float_t x) -> current_float_t { return 0.; };
 }
 
-using p_lambda = std::function<point(double, const point&)>;
-using d_lambda = std::function<double(double, double)>;
+using p_lambda = std::function<point(current_float_t, const point&)>;
+using d_lambda = std::function<current_float_t(current_float_t, current_float_t)>;
+
+#define _x(p) ((p)[0])
+#define _y(p) ((p)[1])
+#define _z(p) ((p)[2])
 
 namespace grav_eq_utils {
-	inline bool square_n_circle_intersection(const point& lb_sq, const point& rt_sq, const point& c_cen_pos, double radius)	{
+	inline bool square_n_circle_intersection(const point& lb_sq, const point& rt_sq, const point& c_cen_pos, current_float_t radius)	{
 		// clamp(value, min, max) - limits value to the range min..max
 		point closest = { clamp(_x(c_cen_pos), _x(lb_sq), _x(rt_sq)) , clamp(_y(c_cen_pos), _y(lb_sq), _y(rt_sq)) };
 		point difference = c_cen_pos - closest;
-		return difference.norma2() < radius*radius;
+		return difference.get_norm2() < radius*radius;
 	}
 	inline bool point_in_square(const point& lb_sq, const point& rt_sq, const point& p_pos) {
-		point center = (rt_sq + lb_sq) * 0.5;
-		double width = (_x(rt_sq) - _x(lb_sq)) * 0.5;
+		point center = (rt_sq + lb_sq) * 0.5f;
+		current_float_t width = (_x(rt_sq) - _x(lb_sq)) * 0.5f;
 		return (abs(_x(center) - _x(p_pos)) < width) && (abs(_y(center) - _y(p_pos)) < width);
 	}
-	inline bool point_in_circle(const point& c_pos, double radius, const point& p_pos) {
-		return (c_pos - p_pos).norma() < radius;
+	inline bool point_in_circle(const point& c_pos, current_float_t radius, const point& p_pos) {
+		return (c_pos - p_pos).get_norm() < radius;
 	}
-	inline bool circle_inside_square(const point& lb_sq, const point& rt_sq, const point& c_r_pos, double radius) {
-		//point center = (rt_sq + lb_sq) * 0.5;
-		point vec = c_r_pos - (rt_sq + lb_sq) * 0.5;
+	inline bool circle_inside_square(const point& lb_sq, const point& rt_sq, const point& c_r_pos, current_float_t radius) {
+		//point center = (rt_sq + lb_sq) * 0.5f;
+		point vec = c_r_pos - (rt_sq + lb_sq) * 0.5f;
 		point n_vec = { (vec[0] >= 0) ? 1 : -1, (vec[1] >= 0) ? 1 : -1 };
 		n_vec *= radius;
 		return n_vec >= lb_sq && n_vec <= rt_sq;
 	}
-	constexpr double epsilon = 5e-3;
-	inline double pressure_core(const point& r, double h) {
-		constexpr double constant = 4.;
-		double r_norm = r.norma();
+	constexpr current_float_t epsilon = 5e-3;
+	inline current_float_t pressure_core(const point& r, current_float_t h) {
+		constexpr current_float_t constant = 4.;
+		current_float_t r_norm = r.get_norm();
 		if (r_norm < h) 
 			return constant* std::pow(h - r_norm, 3) / std::pow(h, 4);
 		else
 			return 0.;
 	}
-	inline point pressure_core_gradient(const point& r, double h) {
-		constexpr double constant = -12.;
-		double r_norm = r.norma();
+	inline point pressure_core_gradient(const point& r, current_float_t h) {
+		constexpr current_float_t constant = -12.;
+		current_float_t r_norm = r.get_norm();
 		if (r_norm < h && std::abs(r_norm) > epsilon)
 			return constant * (r / r_norm) * std::pow(h - r_norm, 2) / std::pow(h, 4);
 		else
 			return {0,0};
 	}
-	inline double pressure_core(double r, double h) {
-		constexpr double constant = 4.;
+	inline current_float_t pressure_core(current_float_t r, current_float_t h) {
+		constexpr current_float_t constant = 4.;
 		if (r < h)
 			return constant * std::pow(h - r, 3) / std::pow(h, 4);
 		else
 			return 0.;
 	}
-	inline double inverse_pressure_core(double d, double h) {
+	inline current_float_t inverse_pressure_core(current_float_t d, current_float_t h) {
 		if (0 <= d && d <= h)
 			return h - std::pow(h * h * h * h * d / 4., 1. / 3.);
 		else return 0;
@@ -85,11 +93,11 @@ namespace grav_eq_utils {
 
 inline void draw_smooth_circle(const float x, const float y, const float r, const float value, const float dvalue, const float dangle) {
 	float begin = grav_eq_utils::pressure_core(0, r);
-	for (float val = begin; val > 0.005; val /= dvalue) {
+	for (float val = begin; val > 0.005f; val /= dvalue) {
 
 		float rad = grav_eq_utils::inverse_pressure_core(val, r);
 
-		auto [pr, pg, pb] = get_color(val*value);
+		auto [pr, pg, pb] = get_color(val * value);
 
 		glColor4f(pr, pg, pb, 0.025f);
 
@@ -104,21 +112,21 @@ inline void draw_smooth_circle(const float x, const float y, const float r, cons
 }
 
 struct particle {
-	static constexpr int desired_amount_of_interactions = 10;//25^(2/3) ~ 8.5//+1 for noninteractive particle
+	static constexpr int desired_amount_of_interactions = 10;//25^(2/3) ~ 8.5f//+1 for noninteractive particle
 	int interactions_count;
 	point position;
 	point velocity;
 	point acceleration;
-	double mass;
-	double radius;
-	double energy;
+	current_float_t mass;
+	current_float_t radius;
+	current_float_t energy;
 #ifdef is_variable_timestep
-	double cfl_time;
+	current_float_t cfl_time;
 #endif
 	bool visited;
-	particle(point position = { 0.,0. }, point velocity = { 0.,0. }, point acceleration = { 0.,0. }, double part_mass = 0., double radius = 0., double energy = 0., int amount_of_interactions = 1
+	particle(point position = { 0.f, 0.f }, point velocity = { 0.f, 0.f }, point acceleration = { 0.f, 0.f }, current_float_t part_mass = 0., current_float_t radius = 0., current_float_t energy = 0., int amount_of_interactions = 1
 #ifdef is_variable_timestep
-		, double cfl_time = 10
+		, current_float_t cfl_time = 10
 #endif
 		) :
 		position(position), velocity(velocity), mass(part_mass), radius(radius), energy(energy), acceleration(acceleration), interactions_count(amount_of_interactions)
@@ -130,12 +138,12 @@ struct particle {
 	}
 	inline bool operator==(const particle& prt) const {
 		using namespace grav_eq_utils;
-		return ((position - prt.position).norma2() == 0) && ((velocity - prt.velocity).norma2() == 0);
+		return ((position - prt.position).get_norm2() == 0) && ((velocity - prt.velocity).get_norm2() == 0);
 	}
 	//inverse to operator-
 	inline particle operator+(const particle& prt) const {
-		double ratio = mass / (prt.mass + mass);
-		double aratio = 1. - ratio;
+		current_float_t ratio = mass / (prt.mass + mass);
+		current_float_t aratio = 1. - ratio;
 		return particle(
 			ratio * position + aratio * prt.position,
 			ratio * velocity + aratio * prt.velocity,
@@ -152,7 +160,7 @@ struct particle {
 	//inverse to operator+
 	/*
 	inline particle operator-(const particle& prt) const {
-		double ratio = mass / (mass - prt.mass);
+		current_float_t ratio = mass / (mass - prt.mass);
 		return particle(
 			ratio * (position - prt.position) + prt.position,
 			ratio * (velocity - prt.velocity) + prt.velocity,
@@ -200,14 +208,14 @@ struct node {
 		null_node = nullptr;
 		left_bottom = left_top = right_bottom = right_top = parent = nullptr;
 		particles_count_in_subtrees = 0;
-		leftbottom_corner = righttop_corner = { 0,0 };
+		leftbottom_corner = righttop_corner = { 0, 0 };
 		mass_center = particle();
 	}
 	node(node* parent, positioning pos_id) :node() {
 		this->parent = parent;
 		point center = (parent->righttop_corner + parent->leftbottom_corner) / 2.;
 		mass_center.position = center;
-		point local_shift(vector<double>{ 0., _y(center - parent->leftbottom_corner) });
+		point local_shift{ 0.f, _y(center - parent->leftbottom_corner) };
 		switch (pos_id) {
 		case leftbottom:
 			parent->left_bottom = this;
@@ -289,7 +297,7 @@ struct node {
 
 //some time before it was an object...
 //not more than O(logN) in case of *not specifically built tree*
-inline void radius_node_catcher(node* center, double radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
+inline void radius_node_catcher(node* center, current_float_t radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
 	point source = (rsv_source)? *rsv_source:center->mass_center.position;
 	auto count = center->particles_count_in_subtrees;
 	while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
@@ -335,11 +343,11 @@ struct quad_tree {
 	quad_tree() /*: reserver(new node_reserver())*/ {
 		root_node = nullptr;
 	}
-	quad_tree(double size) : quad_tree() {
+	quad_tree(current_float_t size) : quad_tree() {
 		//root_node = reserver->get_unused();
 		root_node = new node();
-		root_node->leftbottom_corner = { -size * 0.5,-size * 0.5 };
-		root_node->righttop_corner = { size * 0.5,size * 0.5 };
+		root_node->leftbottom_corner = { -size * 0.5f, -size * 0.5f };
+		root_node->righttop_corner = { size * 0.5f, size * 0.5f };
 	}
 	~quad_tree() {
 		clear();
@@ -414,7 +422,7 @@ struct quad_tree {
 			goto prp_ending;
 
 		if (std::abs(nd->mass_center.mass) == 0 || 
-			(nd->mass_center.position - prt.position).norma2() == 0 || 
+			(nd->mass_center.position - prt.position).get_norm2() == 0 || 
 			level >= max_level) {
 			nd->mass_center += prt;
 			goto prp_ending;
@@ -444,14 +452,14 @@ struct quad_tree {
 		return temp;
 	}
 
-	inline void draw(int draw_level, const point& center, double side_size, float points_size, float value_decrimemnt,
+	inline void draw(int draw_level, const point& center, current_float_t side_size, float points_size, float value_decrimemnt,
 		draw_type::dt type = draw_type::dt::density, bool extra_flare = false, bool edge_drawer = false, bool draw_points = false, bool extended_draw = false) {
 		swap_prevention.lock();
 		std::vector<pair<node*,int>> cur_nodes;
 		cur_nodes.reserve(1000);
 		pair<node*, int> cur_node = { root_node , 0 };
 		node* temp = nullptr;
-		double size = (_x(root_node->righttop_corner) - _x(root_node->leftbottom_corner));
+		current_float_t size = (_x(root_node->righttop_corner) - _x(root_node->leftbottom_corner));
 		auto relative_size = side_size / size;
 		auto scale = BEG_RANGE / RANGE;
 		while (true) {
@@ -468,9 +476,9 @@ struct quad_tree {
 				else {
 					point lb = (cur_node.first->leftbottom_corner * relative_size + center);
 					point rt = (cur_node.first->righttop_corner * relative_size + center);
-					double particle_value = 0;
-					double node_value = 0;
-					double ratio = (cur_node.first->mass_center.radius * cur_node.first->mass_center.radius) / std::pow(_x(cur_node.first->leftbottom_corner - cur_node.first->righttop_corner), 2);
+					current_float_t particle_value = 0;
+					current_float_t node_value = 0;
+					current_float_t ratio = (cur_node.first->mass_center.radius * cur_node.first->mass_center.radius) / std::pow(_x(cur_node.first->leftbottom_corner - cur_node.first->righttop_corner), 2);
 					bool visited = cur_node.first->mass_center.visited;
 					auto position = (cur_node.first->mass_center.position * relative_size + center);
 					switch (type) {
@@ -514,15 +522,15 @@ struct quad_tree {
 						draw_smooth_circle(_x(position), _y(position), 
 							cur_node.first->mass_center.radius * relative_size,
 							particle_value * value_decrimemnt,
-							1.10, 15
+							1.10f, 15
 						);
 					}
 					else {
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
-						auto a = (pr + pg + pb) * 0.15;
-						auto pointSize = (std::max)(1., cur_node.first->mass_center.radius * relative_size * scale);
+						auto a = (pr + pg + pb) * 0.15f;
+						auto pointSize = (std::max)(1.f, cur_node.first->mass_center.radius * relative_size * scale);
 						glPointSize(pointSize);
-						glColor4f(pr, pg, pb, 0.05 + 0.05 * visited + a);
+						glColor4f(pr, pg, pb, 0.05f + 0.05f * visited + a);
 						glBegin(GL_POINTS);
 						glVertex2f(_x(position), _y(position));
 						glEnd();
@@ -530,7 +538,7 @@ struct quad_tree {
 					
 					if (draw_points) {
 						glPointSize(points_size + extra_flare * points_size);
-						glColor4f(0.5 + extra_flare * visited, 0.5 - extra_flare * visited, 0.5 + 0.5 * visited, 0.5);
+						glColor4f(0.5f + extra_flare * visited, 0.5f - extra_flare * visited, 0.5f + 0.5f * visited, 0.5f);
 						glBegin(GL_POINTS);
 						glVertex2f(_x(position), _y(position));
 						glEnd();
@@ -628,13 +636,14 @@ struct grav_eq_processor {
 	mutable std::vector<std::pair<int, node*>> _subdivision_roots;
 	mutable std::vector<pooled_thread*> threads;
 	const size_t num_of_threads;
+	decltype(std::chrono::steady_clock::now()) last_measure;
 
-	double heat_capacity;
-	double polytropic_coef;
-	double time_step;
-	double local_time_step;
-	double total_time;
-	const double __size;
+	current_float_t heat_capacity;
+	current_float_t polytropic_coef;
+	current_float_t time_step;
+	current_float_t local_time_step;
+	current_float_t total_time;
+	const current_float_t __size;
 	quad_tree current, buffer;
 	std::mutex buffer_mutex;
 	std::mutex pre_swap;
@@ -644,17 +653,13 @@ struct grav_eq_processor {
 	bool reporting;
 	bool halt_velocity;
 
-#ifdef measuring_performance
-	std::chrono::high_resolution_clock::time_point last_iteration;
-#endif // performance_measuring
-
-
-	grav_eq_processor(const vector<particle>& input, double size) :
+	grav_eq_processor(const vector<particle>& input, current_float_t size) :
 		current(size),
 		buffer(size),
-		heat_capacity(1.67),
-		polytropic_coef(1.67),
-		time_step(0.004), flickering(false), reporting(false), halt_velocity(false),
+		heat_capacity(1.67f),
+		polytropic_coef(1.67f),
+		time_step(0.004f),
+		flickering(false), reporting(false), halt_velocity(false),
 		num_of_threads((std::max)(std::thread::hardware_concurrency() - 0, 1u)),
 		__size(size),
 		local_time_step(time_step), 
@@ -672,10 +677,10 @@ struct grav_eq_processor {
 			current.push(prt);
 	}
 
-	inline static double get_density_at(node* begin, vecnode& reserved_rad_nodes, particle* rsv_part = nullptr) {
+	inline static current_float_t get_density_at(node* begin, vecnode& reserved_rad_nodes, particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
 		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
-		double sum = 0;
+		current_float_t sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
 			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
@@ -686,10 +691,10 @@ struct grav_eq_processor {
 		return sum;
 	}
 
-	inline static double get_energy_at(node* begin, vecnode& reserved_rad_nodes, vecnode& reserved_drn, particle* rsv_part = nullptr) {
+	inline static current_float_t get_energy_at(node* begin, vecnode& reserved_rad_nodes, vecnode& reserved_drn, particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
 		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
-		double sum = 0;
+		current_float_t sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
 			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
@@ -703,21 +708,24 @@ struct grav_eq_processor {
 	}
 
 	inline static point grav_force(const particle& center, const particle& distant_prt) {
-		constexpr double grav_const = 0.001;//just because ...
+		constexpr current_float_t grav_const = 0.001f;//just because ...
 		auto t = grav_const * center.mass * distant_prt.mass * (distant_prt.position - center.position) /
-			std::pow(((distant_prt.radius + center.radius) * 0.5 + (center.position - distant_prt.position).norma2()), 1.5);
+			std::pow(((distant_prt.radius + center.radius) * 0.5f + (center.position - distant_prt.position).get_norm2()), 1.5f);
 		//cout << t << endl;
 		return t;
 	}
 
-	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const double error_edge_squared) {
-		point gravitational_force = { 0,0 };
+	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const current_float_t error_edge_squared)
+	{
+		point gravitational_force = { 0, 0 };
 		std::vector<node*> cur_nodes;
+
 		cur_nodes.reserve(cur_node->particles_count_in_subtrees);
 		constexpr bool is_real_gravity = false;
 		auto get_squared_error = [](const particle& cur, node* check_node) {
-			return 0.5 * (check_node->leftbottom_corner - check_node->righttop_corner).norma2() / (cur.position - check_node->mass_center.position).norma2();
+			return 0.5f * (check_node->leftbottom_corner - check_node->righttop_corner).get_norm2() / (cur.position - check_node->mass_center.position).get_norm2();
 		};
+
 		node** ptemp;
 		while (true) {
 			if (cur_node) {
@@ -729,7 +737,7 @@ struct grav_eq_processor {
 						}
 					}
 				}
-				else if ((current.position - cur_node->mass_center.position).norma2() >= pow(grav_eq_utils::epsilon,2)) {
+				else if ((current.position - cur_node->mass_center.position).get_norm2() >= pow(grav_eq_utils::epsilon, 2)) {
 					gravitational_force +=
 						grav_force(current, cur_node->mass_center);
 				}
@@ -744,42 +752,42 @@ struct grav_eq_processor {
 		return gravitational_force;
 	}
 
-	inline static double get_pressure__old(double density, double energy, double polytropic_coef, double heat_capacity) {
-		constexpr double big_C_coef = 8.3;
-		return (heat_capacity - 1) * density * energy + big_C_coef * (polytropic_coef / 3. + 1. - heat_capacity) * std::pow(std::abs(density), polytropic_coef / 3. + 1.);
+	inline static current_float_t get_pressure__old(current_float_t density, current_float_t energy, current_float_t polytropic_coef, current_float_t heat_capacity) {
+		constexpr current_float_t big_C_coef = 8.3f;
+		return (heat_capacity - 1) * density * energy + big_C_coef * (polytropic_coef / 3.f + 1.f - heat_capacity) * std::pow(std::abs(density), polytropic_coef / 3.f + 1.f);
 	}
 
-	inline static double get_pressure(double density, double energy, double polytropic_coef, double heat_capacity) {
-		double ideal_term = (heat_capacity - 1) * density * (std::max)(energy, grav_eq_utils::epsilon);
-		double polytropic = 0.1 * pow(std::abs(density), polytropic_coef);
+	inline static current_float_t get_pressure(current_float_t density, current_float_t energy, current_float_t polytropic_coef, current_float_t heat_capacity) {
+		current_float_t ideal_term = (heat_capacity - 1) * density * (std::max)(energy, grav_eq_utils::epsilon);
+		current_float_t polytropic = 0.1f * std::pow(std::abs(density), polytropic_coef);
 		return (std::max)(ideal_term + polytropic, grav_eq_utils::epsilon);
 	}
 
-	inline static bool is_beyond_radius(const point& dist, double radius) {
-		return (dist.norma2() > radius* radius);
+	inline static bool is_beyond_radius(const point& dist, current_float_t radius) {
+		return (dist.get_norm2() > radius* radius);
 	}
 
 	struct iteration_result {
 		point dV;
-		double dE;
-		double dR;
+		current_float_t dE;
+		current_float_t dR;
 		int interactions_count;
-		double dT_CFL;
+		current_float_t dT_CFL;
 	};
 
 	inline iteration_result iterate_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
-		const double heat_capacity, const double polytropic_coef, const double time_step)
+		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step)
 	{
-		constexpr double error_edge_squared = 0.05;
-		constexpr double courant_number = 0.3;
+		constexpr current_float_t error_edge_squared = 0.05f;
+		constexpr current_float_t courant_number = 0.3f;
 		constexpr bool is_complete_SPH = true;
 		node* cur_node = current.root_node; 
 		int interactions_counter = 0;
 		corad_vector1->clear();
 		corad_vector2->clear();
-		double cur_density = 0;
-		double cur_energy = 0;
-		double cur_pressure = 0;
+		current_float_t cur_density = 0;
+		current_float_t cur_energy = 0;
+		current_float_t cur_pressure = 0;
 
 		radius_node_catcher(cur_node, current_prt.radius, rad_vector, &current_prt.position);
 
@@ -788,137 +796,177 @@ struct grav_eq_processor {
 		cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
 
 		point gravity = barnes_hutt_force_in_subtree(cur_node, current_prt, error_edge_squared);
+		
+		current_float_t c_i = sqrt(polytropic_coef * (std::max)(cur_pressure, grav_eq_utils::epsilon) / (std::max)(cur_density, grav_eq_utils::epsilon));
 
-		double dR = 0;
-		double dE = 0;
+		current_float_t dR = 0;
+		current_float_t dE = 0;
 
-		double max_mu = 0;
-		double delta_time_CFL = 0;
+		current_float_t max_mu = 0;
+		current_float_t delta_time_CFL = 0;
 
-		point dV = { 0,0 };
-		double nabla_velocity = 0;
+		point dV = { 0, 0 };
+		current_float_t nabla_velocity = 0;
 
-		auto mu__old = [&](const particle& prt) {
+		auto mu__old = [&](const particle& prt)
+		{
 			const point velocity_difference = (current_prt.velocity - prt.velocity);
 			const point position_difference = (current_prt.position - prt.position);
-			const double radius = (std::max)(current_prt.radius, prt.radius);
-			double prod = velocity_difference * position_difference;
-			double stabilizing_term = 0.01;
+			const current_float_t radius = (std::max)(current_prt.radius, prt.radius);
+			current_float_t prod = velocity_difference * position_difference;
+			current_float_t stabilizing_term = 0.02f;
 			if (prod < 0)
 				return radius * prod / (
-					(position_difference.norma2() + stabilizing_term)
+					(position_difference.get_norm2() + stabilizing_term)
 				);
 			else
-				return 0.;
+				return 0.f;
 		};
 
-		auto mu = [&](const particle& prt, double inner_node_pressure, double inner_node_density) {
+		auto mu = [&](const particle& prt, current_float_t inner_node_pressure, current_float_t inner_node_density)
+		{
 			const point velocity_difference = (current_prt.velocity - prt.velocity);
 			const point position_difference = (current_prt.position - prt.position);
-			double h_ij = (current_prt.radius + prt.radius) / 2.0;
-			double eta2 = 0.01 * h_ij * h_ij;  // η = 0.1 h_ij
-			double prod = velocity_difference * position_difference;
-			if (prod < 0) {
-				double mu_ij = h_ij * prod / (position_difference.norma2() + eta2);
-				double c_i = sqrt(polytropic_coef * cur_pressure / cur_density);
-				double c_j = sqrt(polytropic_coef * inner_node_pressure / inner_node_density);
-				double c_ij = (c_i + c_j) / 2.0;
-				return (std::max)(mu_ij, -2.0 * c_ij);  // Cap |μ_ij| ≤ 2 * c_ij
+			current_float_t h_ij = (current_prt.radius + prt.radius) / 2.0f;
+			current_float_t eta2 = 0.02f * h_ij * h_ij;  // η = 0.1 h_ij
+			current_float_t prod = velocity_difference * position_difference;
+			if (prod < 0)
+			{
+				current_float_t mu_ij = h_ij * prod / (position_difference.get_norm2() + eta2);
+				current_float_t c_i = sqrt(polytropic_coef * cur_pressure / cur_density);
+				current_float_t c_j = sqrt(polytropic_coef * inner_node_pressure / inner_node_density);
+				current_float_t c_ij = (c_i + c_j) / 2.0f;
+				return (std::max)(mu_ij, -2.0f * c_ij);  // Cap |μ_ij| ≤ 2 * c_ij
 			}
 			else {
-				return 0.0;
+				return 0.0f;
 			}
 		};
 
-		dR = current_prt.radius * (0.05 + 0.45*(is_complete_SPH)) * (1. + std::pow(particle::desired_amount_of_interactions / (current_prt.interactions_count + 1), 0.33333));
-		dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1);
+		dR = current_prt.radius * (0.05f + 0.45f*(is_complete_SPH)) * (1.f + std::pow(particle::desired_amount_of_interactions / (current_prt.interactions_count + 1), 0.33333f));
+		dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1f);
 		dR -= current_prt.radius;
 
-		for (auto& it_node : *rad_vector) {
+		//current_float_t max_Pi = 0;
+		for (auto& it_node : *rad_vector)
+		{
+			if (!is_complete_SPH)
+				break;
+
 			auto pos_difference = current_prt.position - it_node->mass_center.position;
 			auto vel_difference = current_prt.velocity - it_node->mass_center.velocity;
-			auto avg_radius = (current_prt.radius + it_node->mass_center.radius) / 2.0;
-			if (is_beyond_radius(pos_difference, avg_radius) || pos_difference.norma2()<grav_eq_utils::epsilon || !is_complete_SPH)
+			auto avg_radius = (current_prt.radius + it_node->mass_center.radius) / 2.0f;
+
+			if (is_beyond_radius(pos_difference, avg_radius) || pos_difference.get_norm2() < grav_eq_utils::epsilon)
 				continue;
+
 			auto inner_node_density = get_density_at(it_node, *corad_vector1);
 			auto inner_node_energy = get_energy_at(it_node, *corad_vector1, *corad_vector2);
 			auto inner_node_pressure = get_pressure(inner_node_density, inner_node_energy, polytropic_coef, heat_capacity);
 			auto core_gradient = grav_eq_utils::pressure_core_gradient(pos_difference, avg_radius);
 
-			double rho_ij = (cur_density + inner_node_density) / 2.0;
-			double mu_val = mu(it_node->mass_center, inner_node_pressure, inner_node_density);
-			double c_i = sqrt(polytropic_coef * cur_pressure / cur_density);
-			double c_j = sqrt(polytropic_coef * inner_node_pressure / inner_node_density);
-			double c_ij = (c_i + c_j) / 2.0;
-			double Pi_ij = 0.0;
-			if (mu_val < 0 && rho_ij > grav_eq_utils::epsilon)
+			current_float_t rho_ij = (cur_density + inner_node_density) / 2.0f;
+			current_float_t mu_val = mu(it_node->mass_center, inner_node_pressure, inner_node_density);
+			current_float_t c_j = sqrt(polytropic_coef * (std::max)(inner_node_pressure, grav_eq_utils::epsilon) / (std::max)(inner_node_density, grav_eq_utils::epsilon));
+			current_float_t c_ij = (c_i + c_j) / 2.0f;
+			current_float_t Pi_ij = 0.0f;
+
+			if (mu_val < 0 && std::abs(rho_ij) > grav_eq_utils::epsilon)
 			{
-				Pi_ij = (-1.0 * c_ij * mu_val + 1.0 * mu_val * mu_val) / rho_ij;  // β=1.0 (reduced)
-				Pi_ij = (std::min)(Pi_ij, 10.0 * c_ij * c_ij / rho_ij);  // Cap Π_ij
+				Pi_ij = (-0.5f * c_ij * mu_val + 1.0f * mu_val * mu_val) / std::abs(rho_ij);  // β=1.0f (reduced)
+				// Pi_ij = (std::min)(Pi_ij, 10.0f * c_ij * c_ij / rho_ij);  // Cap Π_ij
 				max_mu = (std::max)(max_mu, -mu_val);
+			}
+
+			if (Pi_ij > 1)
+				Pi_ij = 1.f; // Hard cap Π_ij
+
+			if (cur_pressure < 0 || inner_node_pressure < 0) {
+				printf("Negative pressure detected: cur_P=%f, inner_P=%f, cur_rho=%f, inner_rho=%f, cur_u=%f, inner_u=%f\n",
+					cur_pressure, inner_node_pressure, cur_density, inner_node_density, current_prt.energy, it_node->mass_center.energy);
 			}
 
 			nabla_velocity +=
 				it_node->mass_center.mass * vel_difference * core_gradient;
 
+			constexpr current_float_t Pi_coef = 1.f;
+
 			dV += it_node->mass_center.mass * (
 					inner_node_pressure / (inner_node_density * inner_node_density) +
 					cur_pressure / (cur_density * cur_density) +
-					Pi_ij
+					Pi_coef * Pi_ij
 				) * core_gradient;
 
 			dE +=
 				it_node->mass_center.mass * vel_difference * (
 					inner_node_pressure / (inner_node_density * inner_node_density) +
 					cur_pressure / (cur_density * cur_density) + 
-					0.5 * Pi_ij
+					Pi_coef * 0.5f * Pi_ij
 				) * core_gradient;
 
+			//max_Pi = (std::max)(max_Pi, Pi_ij);
 			interactions_counter++;
 		}
 
+		// std::cout << max_Pi << std::endl;
+
 		nabla_velocity = -nabla_velocity / cur_density;
-		delta_time_CFL = (std::min)(sqrt(current_prt.radius / dV.norma()), 
-			(std::min)(courant_number * current_prt.radius / (current_prt.velocity.norma()),
+		/*delta_time_CFL = (std::min)(sqrt(current_prt.radius / dV.get_norm()), 
+			(std::min)(courant_number * current_prt.radius / (current_prt.velocity.get_norm()),
 				abs(courant_number * current_prt.radius /
-			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2 * (cur_energy + 0.5 * max_mu)))
-			));
-		
+			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2f * (cur_energy + 0.5f * max_mu)))
+		));*/
+
+		delta_time_CFL = (std::min)(
+			sqrt(current_prt.radius / (std::max)(dV.get_norm(), grav_eq_utils::epsilon)),
+			(std::min)(
+				courant_number * current_prt.radius / (std::max)(current_prt.velocity.get_norm(), grav_eq_utils::epsilon),
+				courant_number * current_prt.radius / (std::max)(
+					current_prt.radius * abs(nabla_velocity) + c_i + 1.2f * (c_i + max_mu),
+					grav_eq_utils::epsilon
+				)
+			)
+		);
+
 		//dE *= (polytropic_coef - 1) / std::pow(std::abs(cur_density), polytropic_coef - 1) * (cur_density > 0 ? 1 : -1);
 
 		return { -dV + gravity, (dE), dR, interactions_counter, delta_time_CFL };
 	}
 
 	inline particle iterate_over_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
-		const double heat_capacity, const double polytropic_coef, const double time_step) {// kind-of velvet integration
+		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step) {// kind-of velvet integration
 		
 		particle local_prt = current_prt;
-		double time_elapsed = 0;
-		double local_time_step = time_step;
+		current_float_t time_elapsed = 0;
+		current_float_t local_time_step = time_step;
 #ifdef is_variable_timestep
-		double cfl_time = local_prt.cfl_time;
+		current_float_t cfl_time = local_prt.cfl_time;
 #endif
 		auto ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, heat_capacity, polytropic_coef, local_time_step);
 		local_prt.energy += local_time_step * ans.dE;
 		local_prt.interactions_count = ans.interactions_count;
-		local_prt.radius += 0.5 * ans.dR;
+		local_prt.radius += 0.5f * ans.dR;
 
 		point initial_vel = local_prt.velocity;
 		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
-			(2. / 3) * ans.dV - (1. / 6) * local_prt.acceleration
-			));
-		local_prt.velocity += local_time_step * (1.5 * ans.dV - 0.5 * local_prt.acceleration);
+			(2.f / 3) * ans.dV - (1.f / 6) * local_prt.acceleration
+		));
+		local_prt.velocity += local_time_step * (1.5f * ans.dV - 0.5f * local_prt.acceleration);
 
 		auto n_ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, polytropic_coef, heat_capacity, local_time_step);
-		//local_prt.energy += 0.25 * time_step * n_ans.dE;
+		//local_prt.energy += 0.25f * time_step * n_ans.dE;
 		local_prt.interactions_count = n_ans.interactions_count;
 		
-		local_prt.radius = (std::max)(local_prt.radius + 0.5 * n_ans.dR, grav_eq_utils::epsilon * __size * 0.1);
-		local_prt.energy += 0.5 * local_time_step * (ans.dE + n_ans.dE);
+		local_prt.radius = (std::max)(local_prt.radius + 0.5f * n_ans.dR, grav_eq_utils::epsilon * __size * 0.1f);
+		local_prt.energy += 0.5f * local_time_step * (ans.dE + n_ans.dE);
 
-		local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5;
-		local_prt.velocity = initial_vel + local_time_step * ((1. / 3) * n_ans.dV + (5. / 6) * ans.dV - (1. / 6) * local_prt.acceleration);
+		local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5f;
+		local_prt.velocity = initial_vel + local_time_step * ((1.f / 3) * n_ans.dV + (5.f / 6) * ans.dV - (1.f / 6) * local_prt.acceleration);
 		time_elapsed += local_time_step;
+
+		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
+			(2.f / 3) * ans.dV - (1.f / 6) * local_prt.acceleration
+		));
 
 #ifdef is_variable_timestep
 		local_prt.cfl_time = (std::min)(ans.dT_CFL, n_ans.dT_CFL);
@@ -943,26 +991,31 @@ struct grav_eq_processor {
 					auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
 					cur_node->mass_center.visited = flickering;
 					if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
-						if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position)) {
-							prt.position[0] = clamp(prt.position[0], 
-								buffer.root_node->leftbottom_corner[0],
-								buffer.root_node->righttop_corner[0]);
-							prt.position[1] = clamp(prt.position[1], 
-								buffer.root_node->leftbottom_corner[1],
-								buffer.root_node->righttop_corner[1]);
-							if (prt.position[0] == buffer.root_node->leftbottom_corner[0] ||
-								prt.position[0] == buffer.root_node->righttop_corner[0])
-							{
-								prt.velocity[0] *= -1;
-								prt.acceleration[0] = 0;
-							}
-							if (prt.position[1] == buffer.root_node->leftbottom_corner[1] ||
-								prt.position[1] == buffer.root_node->righttop_corner[1])
-							{
-								prt.velocity[1] *= -1;
-								prt.acceleration[1] = 0;
-							}
+						if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position))
+						{
+							float x_min = buffer.root_node->leftbottom_corner[0];
+							float x_max = buffer.root_node->righttop_corner[0];
+							float y_min = buffer.root_node->leftbottom_corner[1];
+							float y_max = buffer.root_node->righttop_corner[1];
+							float x_range = x_max - x_min;
+							float y_range = y_max - y_min;
+
+							// Wraparound for X coordinate
+							if (prt.position[0] < x_min)
+								prt.position[0] += x_range;
+							else if (prt.position[0] > x_max)
+								prt.position[0] -= x_range;
+
+							// Wraparound for Y coordinate
+							if (prt.position[1] < y_min)
+								prt.position[1] += y_range;
+							else if (prt.position[1] > y_max)
+								prt.position[1] -= y_range;
+
+							prt.velocity *= 0.5f; // damping
+							prt.acceleration *= -1.f;
 						}
+
 						buffer_mutex.lock();
 						buffer.push(prt); 
 						buffer_mutex.unlock();
@@ -983,7 +1036,7 @@ struct grav_eq_processor {
 
 	inline void subdivide_tree() {
 		constexpr int catch_level = 5;
-		const double relation = (double)current.root_node->particles_count_in_subtrees / num_of_threads;
+		const current_float_t relation = (current_float_t)current.root_node->particles_count_in_subtrees / num_of_threads;
 
 		int cur_thread_num = 0;
 		int cur_am_of_particles = 0;
@@ -994,22 +1047,32 @@ struct grav_eq_processor {
 		while (_subdivision_cur_nodes.size()) 
 			_subdivision_cur_nodes.pop_back();
 
-		printf("%i particles\n", current.root_node->particles_count_in_subtrees);
+		auto now = std::chrono::steady_clock::now();
+
+#ifndef measuring_performance
+		auto difference = std::chrono::duration_cast<std::chrono::seconds>(now - last_measure).count();
+		if (difference > 2)
+		if (difference > 2)
+		{
+			last_measure = now;
+			printf("%i particles\n", current.root_node->particles_count_in_subtrees);
 
 #ifdef is_variable_timestep
-		printf("cfl_time: %.10lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
-		local_time_step = (std::max)((std::min)(current.root_node->mass_center.cfl_time, time_step), 1e-10);
+			printf("cfl_time: %.10lf; total_time: %lf\n", current.root_node->mass_center.cfl_time, total_time);
 #else
-		printf("total_time: %lf\n", total_time);
+			printf("time_step: %.10lf; total_time: %lf\n", time_step, total_time);
+#endif			
+		}
+#else
+		printf("Delta time: %lf\n", difference.count());
+#endif
+
+#ifdef is_variable_timestep
+		local_time_step = (std::max)((std::min)(current.root_node->mass_center.cfl_time, time_step), 1e-10f);
+#else
 		local_time_step = time_step;
 #endif
 		total_time += local_time_step;
-#ifdef measuring_performance
-		auto now = std::chrono::high_resolution_clock::now();
-		auto difference = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_iteration);
-		last_iteration = now;
-		printf("Delta time: %lf\n", difference.count());
-#endif // measuring_performance
 
 		while (true) {
 			if (cur_node.first) {

@@ -206,7 +206,6 @@
     <ClInclude Include="allocator.h" />
     <ClInclude Include="field_vis.h" />
     <ClInclude Include="grav_eq_iterator.h" />
-    <ClInclude Include="multidimentional_point.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="weird_hacks.h" />
   </ItemGroup>

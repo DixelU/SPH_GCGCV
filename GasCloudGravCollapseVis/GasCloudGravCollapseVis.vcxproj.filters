@@ -27,9 +27,6 @@
     <ClInclude Include="grav_eq_iterator.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="multidimentional_point.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="allocator.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -2608,72 +2608,78 @@ WindowsHandler* WH;
 #include "grav_eq_iterator.h"
 //#include "buddhabrot.h"
 
+// omg, this is so stupid, but that's like 5 year old legacy code, so I don't want to change it
+
 struct FieldAdapter : HandleableUIPart {
-	dsfield *dsf;
 	float x, y, side_size, pixel_size, brightness;
 	int64_t hovered_x, hovered_y;
-	FieldAdapter(dsfield *dsf,float x, float y,float side_size,float pixel_size,float brightness) {
-		this->dsf = dsf;
+	FieldAdapter(float x, float y,float side_size,float pixel_size,float brightness)
+	{
 		this->x = x;
 		this->y = y;
 		this->side_size = side_size;
 		this->pixel_size = pixel_size;
 		this->brightness = brightness;
 	}
-	void Draw() override {
-		draw_dsfield(*dsf, x, y, side_size*0.5, pixel_size, brightness);
-	}
-	void SafeMove(float dx, float dy) override {
+
+	void Draw() override { }
+	void SafeMove(float dx, float dy) override
+	{
 		x += dx;
 		y += dy;
 	}
-	void SafeChangePosition(float NewX, float NewY) override {
+	void SafeChangePosition(float NewX, float NewY) override
+	{
 		x = NewX;
 		y = NewY;
 	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override {
+	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override
+	{
 
 	}
-	void KeyboardHandler(CHAR CH) override {
+	void KeyboardHandler(CHAR CH) override 
+	{
 		return;
 	}
-	void SafeStringReplace(string Meaningless) override {
+	void SafeStringReplace(string Meaningless) override 
+	{
 		return;
 	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override {
-		if (fabsf(mx - x) < 0.5*side_size && fabsf(my - y) < 0.5*side_size) {
-			mx = mx - x + 0.5*side_size;
-			my = my - y + 0.5*side_size;
-			mx = mx / side_size * dsf->size();
-			my = my / side_size * dsf->size();
-			hovered_x = mx;
-			hovered_y = my;
-		}
-		else {
-			hovered_x = -1;
-			hovered_y = -1;
-		}
+	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override 
+	{
 		return 0;
 	}
 };
 
-struct SPHAdapter : FieldAdapter {
+struct SPHAdapter : FieldAdapter
+{
 	int draw_level;
 	bool extra_flare, edge_drawer, point_drawer, ext_draw;
 	grav_eq_processor* gep;
 	draw_type::dt draw_type;
 	SPHAdapter(grav_eq_processor* gep, float x, float y, float side_size, float particle_size, float brightness) :
-		FieldAdapter(nullptr, x, y, side_size, particle_size, brightness), gep(gep), draw_type(draw_type::dt::density), draw_level(15), extra_flare(false), edge_drawer(false), point_drawer(false), ext_draw(false){ }
-	void Draw() override {
+		FieldAdapter(x, y, side_size, particle_size, brightness),
+		gep(gep),
+		draw_type(draw_type::dt::density),
+		draw_level(15),
+		extra_flare(false),
+		edge_drawer(false),
+		point_drawer(false),
+		ext_draw(false)
+	{ }
+	void Draw() override
+	{
 		gep->pre_swap.lock();
 		gep->current.draw(draw_level, { x,y }, side_size, pixel_size, brightness, draw_type, extra_flare, edge_drawer, point_drawer, ext_draw);
 		gep->pre_swap.unlock();
 	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override {
+	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
+	{
 		if (false && fabsf(mx - x) < 0.5 * side_size && fabsf(my - y) < 0.5 * side_size) {
 			mx -= x;
 			my -= y;
 		}
+
 		return 0;
 	}
 };
@@ -2691,7 +2697,7 @@ void OnWheel_DrawDepth(double var) {
 	SPH_Adapter_ptr->draw_level = var;
 }
 void OnSelectPropList(int ID) {
-	cout << ID << endl;;
+	//cout << ID << endl;;
 	switch (ID) {
 	case 0:
 		SPH_Adapter_ptr->draw_type = draw_type::dt::density; break;
@@ -2751,22 +2757,23 @@ void mDisplay() {
 	if (FIRSTBOOT) {
 		FIRSTBOOT = 0;
 
-		constexpr double size = 100;
-		constexpr double size_fraction = 2.5;
-		constexpr int amount = 1000;
+		constexpr current_float_t size = 100;
+		constexpr current_float_t size_fraction = 2.5;
+		constexpr int amount = 25000;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
 			auto t = (rand() & 1 ? -1 : 1);
-			point temp = { std::abs(RANDFLOAT(size / size_fraction)) * t, RANDFLOAT(size / size_fraction)};
-			auto norma = temp.norma();
+			point temp{ std::abs(RANDFLOAT(size / size_fraction)) * t, RANDFLOAT(size / size_fraction)};
+			auto norma = temp.get_norm();
 			if (norma > size / size_fraction)
 				continue;
+
 			vec.push_back(particle(
 				temp*0.75,
-				(point{ -temp[1],temp[0] }) ,
+				(point{ -temp[1], temp[0] }) ,
 				{0,0},
-				200 + RANDFLOAT(5), 1, 1, 1
+				100000 / amount + RANDFLOAT(5), 1, 1, 1
 			));
 		}
 
