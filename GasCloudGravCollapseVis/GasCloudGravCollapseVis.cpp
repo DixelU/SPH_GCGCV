@@ -3168,7 +3168,7 @@ void mDisplay()
 		constexpr current_float_t size = 100;
 		constexpr current_float_t size_fraction = 2.5;
 		constexpr current_float_t initial_rotation_fraction = 0.1f;
-		constexpr int amount = 20000;
+		constexpr int amount = 200000;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++)
@@ -3183,7 +3183,8 @@ void mDisplay()
 				temp * 0.75,
 				initial_rotation_fraction * point{-temp[1], temp[0]},
 				{0,0},
-				40000000 / amount + RANDFLOAT(5), 1, 1, 1
+				10000 + RANDFLOAT(15),
+				1, 0.01, 1
 			));
 		}
 
