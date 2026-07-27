@@ -56,13 +56,6 @@ namespace dixelu
 			for (std::size_t i = 0; i < dims && y != il_d.end(); ++i, ++y)
 				base_array[i] = *y;
 		}
-		__DIXELU_RELAXED_CONSTEXPR point(const std::initializer_list<general_float_type>& il_d) :
-			base_array()
-		{
-			auto y = il_d.begin();
-			for (std::size_t i = 0; i < dims && y != il_d.end(); ++i, ++y)
-				base_array[i] = *y;
-		}
 		__DIXELU_RELAXED_CONSTEXPR point(const std::initializer_list<int>& il) :
 			base_array()
 		{

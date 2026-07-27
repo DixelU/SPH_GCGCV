@@ -131,14 +131,14 @@ namespace dixelu
 					__opposite_sign_type<T, std::is_signed<T>::value>::type;
 			};
 			template <typename T, typename = int>
-			struct __has_constexpr_expenisve_member : 
+			struct __has_constexpr_expenisve_member :
 				std::false_type { };
 
 			template <typename T>
-			struct __has_constexpr_expenisve_member <T, 
-				decltype((void)((bool)T::is_contexpr_expenisve), 0)> 
+			struct __has_constexpr_expenisve_member <T,
+				decltype((void)((bool)T::is_constexpr_expensive), 0)>
 			{
-				constexpr static bool value = T::is_contexpr_expenisve;
+				constexpr static bool value = T::is_constexpr_expensive;
 			};
 
 			template <typename T>
@@ -157,10 +157,8 @@ namespace dixelu
 					uT yabs(y);
 					return (xlz == ylz) ? T(xabs * yabs) : -T(xabs * yabs);
 				}
-				else
-				{
-					return x * y;
-				}
+
+				return x * y;
 			}
 
 			template<typename T>
@@ -172,10 +170,8 @@ namespace dixelu
 					auto xabs = uT(constexpr_abs<T>(x));
 					return T(xabs * xabs);
 				}
-				else
-				{
-					return x * x;
-				}
+
+				return x * x;
 			}
 
 			template<typename T>
@@ -222,7 +218,7 @@ namespace dixelu
 			};
 
 			template<typename T, unsigned int n>
-			__DIXELU_CONDITIONAL_CPP14_SPECIFIERS 
+			__DIXELU_CONDITIONAL_CPP14_SPECIFIERS
 				typename std::enable_if<(
 						__lookup_table_consts<T, n>::max_degree &&
 						__lookup_table_consts<T, n>::max_degree < expected_maximum_of_complex_constexpr_operations &&
@@ -260,12 +256,13 @@ namespace dixelu
 			template<typename T, std::size_t n>
 			__DIXELU_CONDITIONAL_CPP14_SPECIFIERS T __uintroot(T x)
 			{
-				__DIXELU_RELAXED_CONSTEXPR T __epsilon = std::numeric_limits<T>::epsilon();
-				__DIXELU_RELAXED_CONSTEXPR T has_epsilon = (__epsilon != T());
-				__DIXELU_RELAXED_CONSTEXPR T epsilon = has_epsilon ? __epsilon : T(1);
+				__DIXELU_RELAXED_CONSTEXPR T	__epsilon = std::numeric_limits<T>::epsilon();
+				__DIXELU_RELAXED_CONSTEXPR bool has_epsilon = (__epsilon != T());
+				__DIXELU_RELAXED_CONSTEXPR T	epsilon = has_epsilon ? __epsilon : T(1);
 
 				if (x == T(0))
 					return T(0);
+
 				T n_conv(n);
 				T one(1);
 				T x_k(root_approx<T, n>(x));
@@ -445,7 +442,7 @@ namespace dixelu
 				inverse = true;
 			}
 
-			auto v = utils::details::__uintpow(a, b);
+			auto v = details::__uintpow(a, b);
 			return T(sign) * ((inverse) ? T(1) / v : v);
 		}
 	} // namespace utils
