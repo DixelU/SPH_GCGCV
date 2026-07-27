@@ -53,17 +53,17 @@ float ROT_ANGLE = 0.f, centx = 0., centy = 0.;
 #define WINDYSIZE 720
 
 constexpr float ANGTORAD(float a) { return 0.0174532925f * a; }
-constexpr float RANDFLOAT(float range)
+inline float RANDFLOAT(float range)
 {
 	return (0 - range) + ((float)rand() / ((float)RAND_MAX / (2 * range)));
 }
 
-constexpr int RANDSGN()
+inline int RANDSGN()
 {
 	return (rand() & 1) ? -1 : 1;
 }
 constexpr float SLOWDPROG(float a, float b, float progressrate) { return (a + (progressrate - 1) * b) / progressrate; }
-constexpr void GLCOLOR(unsigned int uINT) { glColor4ub(((uINT & 0xFF000000) >> 24), ((uINT & 0xFF0000) >> 16), ((uINT & 0xFF00) >> 8), (uINT & 0xFF)); }
+inline void GLCOLOR(unsigned int uINT) { glColor4ub(((uINT & 0xFF000000) >> 24), ((uINT & 0xFF0000) >> 16), ((uINT & 0xFF00) >> 8), (uINT & 0xFF)); }
 
 float WindX = WINDXSIZE, WindY = WINDYSIZE;
 
@@ -3436,6 +3436,7 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed)
 
 	for (int step = 0; step < requested_steps; step++)
 	{
+		processor.prepare_iteration();
 		processor.local_time_step = (std::max)(
 			(std::min)(processor.current.root_node->mass_center.cfl_time, processor.time_step),
 			(current_float_t)1e-8f);
@@ -3483,6 +3484,53 @@ int RunNumericalSelfTests()
 		return std::abs(lhs - rhs) <= tolerance;
 	};
 
+	const current_float_t kernel_h = 1.3f;
+	const current_float_t kernel_r = 0.37f;
+	const current_float_t finite_difference_step = 1e-4f;
+	const point kernel_sample{kernel_r, 0.f};
+	const point kernel_gradient =
+		grav_eq_utils::pressure_core_gradient(kernel_sample, kernel_h);
+	const current_float_t finite_difference_gradient =
+		(grav_eq_utils::pressure_core(kernel_r + finite_difference_step, kernel_h) -
+			grav_eq_utils::pressure_core(kernel_r - finite_difference_step, kernel_h)) /
+		(2.f * finite_difference_step);
+	check(
+		nearly_equal(
+			kernel_gradient[0],
+			finite_difference_gradient,
+			2e-3f) &&
+		nearly_equal(kernel_gradient[1], 0.f) &&
+		grav_eq_utils::pressure_core_gradient(
+			point{0.01f, 0.f},
+			1.f).get_norm2() > 0.f &&
+		grav_eq_utils::pressure_core_gradient(
+			point{0.f, 0.f},
+			1.f).get_norm2() == 0.f,
+		"Wendland gradient is smooth at the origin and matches finite differences");
+
+	constexpr int kernel_integration_steps = 8192;
+	current_float_t kernel_integral = 0.f;
+	const current_float_t kernel_dr =
+		kernel_h / kernel_integration_steps;
+	for (int step = 0; step < kernel_integration_steps; step++)
+	{
+		const current_float_t radius =
+			(step + 0.5f) * kernel_dr;
+		kernel_integral +=
+			2.f * grav_eq_utils::pi * radius *
+			grav_eq_utils::pressure_core(radius, kernel_h) *
+			kernel_dr;
+	}
+	const current_float_t inverse_sample =
+		grav_eq_utils::inverse_pressure_core(
+			grav_eq_utils::pressure_core(kernel_r, kernel_h),
+			kernel_h);
+	check(
+		nearly_equal(kernel_integral, 1.f, 2e-4f) &&
+		nearly_equal(inverse_sample, kernel_r, 1e-5f) &&
+		grav_eq_utils::pressure_core(kernel_h, kernel_h) == 0.f,
+		"two-dimensional Wendland kernel is normalized and compactly supported");
+
 	buffered_queue_spsc<int, 4> test_buffer;
 	std::vector<int*> buffered_values;
 	for (int value = 0; value < 10; value++)
@@ -3507,10 +3555,10 @@ int RunNumericalSelfTests()
 				point{0.f, 0.f},
 				point{0.f, 0.f},
 				1.f,
-				0.25f,
+				0.35f + 0.55f * ((x + 2 * y) % 5),
 				1.f);
 	grav_eq_processor subdivision_processor(subdivision_particles, 32.f);
-	subdivision_processor.build_subdivision_tasks();
+	subdivision_processor.prepare_iteration();
 	size_t subdivision_particle_total = 0;
 	size_t largest_subdivision_task = 0;
 	for (node* task_root : subdivision_processor._subdivision_roots)
@@ -3530,6 +3578,96 @@ int RunNumericalSelfTests()
 		grav_eq_processor::subtree_particle_count(
 			subdivision_processor.current.root_node),
 		"adaptive subdivision covers every particle with multiple balanced tasks");
+
+	bool neighbor_graph_matches_brute_force = true;
+	vecnode hashed_neighbors;
+	const auto& hashed_nodes =
+		subdivision_processor.spatial_neighbors.particle_nodes;
+	std::vector<current_float_t> brute_densities(
+		hashed_nodes.size(),
+		0.f);
+	for (node* source_node : hashed_nodes)
+	{
+		subdivision_processor.spatial_neighbors.collect_neighbors(
+			source_node,
+			hashed_neighbors);
+		std::vector<bool> seen(hashed_nodes.size(), false);
+		for (node* neighbor : hashed_neighbors)
+		{
+			if (neighbor->spatial_index >= seen.size() ||
+				seen[neighbor->spatial_index])
+			{
+				neighbor_graph_matches_brute_force = false;
+				continue;
+			}
+			seen[neighbor->spatial_index] = true;
+		}
+
+		for (node* candidate : hashed_nodes)
+		{
+			const current_float_t support_radius = (std::max)(
+				source_node->mass_center.radius,
+				candidate->mass_center.radius);
+			const bool expected =
+				(source_node->mass_center.position -
+					candidate->mass_center.position).get_norm2() <=
+				support_radius * support_radius;
+			if (expected)
+				brute_densities[source_node->spatial_index] +=
+					candidate->mass_center.mass *
+					grav_eq_utils::pressure_core(
+						source_node->mass_center.position -
+							candidate->mass_center.position,
+						support_radius);
+			neighbor_graph_matches_brute_force =
+				neighbor_graph_matches_brute_force &&
+				seen[candidate->spatial_index] == expected;
+		}
+	}
+	bool cached_fields_match_brute_force = true;
+	for (node* source_node : hashed_nodes)
+	{
+		current_float_t brute_energy = 0.f;
+		for (node* candidate : hashed_nodes)
+		{
+			const current_float_t support_radius = (std::max)(
+				source_node->mass_center.radius,
+				candidate->mass_center.radius);
+			const point difference =
+				source_node->mass_center.position -
+				candidate->mass_center.position;
+			if (difference.get_norm2() > support_radius * support_radius)
+				continue;
+			brute_energy +=
+				(candidate->mass_center.mass /
+					brute_densities[candidate->spatial_index]) *
+				candidate->mass_center.energy *
+				grav_eq_utils::pressure_core(
+					difference,
+					support_radius);
+		}
+		const current_float_t density_tolerance = 1e-4f * (std::max)(
+			1.f,
+			std::abs(brute_densities[source_node->spatial_index]));
+		const current_float_t energy_tolerance =
+			1e-4f * (std::max)(1.f, std::abs(brute_energy));
+		cached_fields_match_brute_force =
+			cached_fields_match_brute_force &&
+			nearly_equal(
+				subdivision_processor.spatial_neighbors.density_at(source_node),
+				brute_densities[source_node->spatial_index],
+				density_tolerance) &&
+			nearly_equal(
+				subdivision_processor.spatial_neighbors.energy_at(source_node),
+				brute_energy,
+				energy_tolerance);
+	}
+	check(
+		neighbor_graph_matches_brute_force,
+		"hierarchical spatial hash matches symmetric brute-force neighbours");
+	check(
+		cached_fields_match_brute_force,
+		"cached SPH density and energy match symmetric brute force");
 
 	particle light_center({-1.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, 2.f, 0.5f, 1.f);
 	particle heavy_center = light_center;
@@ -3561,8 +3699,9 @@ int RunNumericalSelfTests()
 		{1.f, 2.f}, {3.f, -4.f}, {0.f, 0.f}, 1.f, 1.f, 1.f);
 	grav_eq_processor inertial_processor({inertial_particle}, 100.f);
 	grav_eq_iteration_buffers iteration_buffers;
+	inertial_processor.prepare_iteration();
 	particle inertial_result = inertial_processor.iterate_over_particle(
-		inertial_processor.current.root_node->mass_center,
+		inertial_processor.current.root_node,
 		iteration_buffers,
 		inertial_processor.heat_capacity,
 		inertial_processor.polytropic_coef,

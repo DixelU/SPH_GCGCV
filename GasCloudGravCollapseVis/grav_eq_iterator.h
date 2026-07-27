@@ -11,7 +11,9 @@
 #include <chrono>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -44,63 +46,70 @@ using d_lambda = std::function<current_float_t(current_float_t, current_float_t)
 
 namespace grav_eq_utils
 {
-inline bool square_n_circle_intersection(const point& lb_sq, const point& rt_sq, const point& c_cen_pos, current_float_t radius)
-{
-	// clamp(value, min, max) - limits value to the range min..max
-	point closest = {clamp(_x(c_cen_pos), _x(lb_sq), _x(rt_sq)) , clamp(_y(c_cen_pos), _y(lb_sq), _y(rt_sq))};
-	point difference = c_cen_pos - closest;
-	return difference.get_norm2() < radius * radius;
-}
 inline bool point_in_square(const point& lb_sq, const point& rt_sq, const point& p_pos)
 {
 	point center = (rt_sq + lb_sq) * 0.5f;
 	current_float_t width = (_x(rt_sq) - _x(lb_sq)) * 0.5f;
 	return (abs(_x(center) - _x(p_pos)) < width) && (abs(_y(center) - _y(p_pos)) < width);
 }
-inline bool point_in_circle(const point& c_pos, current_float_t radius, const point& p_pos)
-{
-	return (c_pos - p_pos).get_norm() < radius;
-}
-inline bool circle_inside_square(const point& lb_sq, const point& rt_sq, const point& c_r_pos, current_float_t radius)
-{
-	//point center = (rt_sq + lb_sq) * 0.5f;
-	point vec = c_r_pos - (rt_sq + lb_sq) * 0.5f;
-	point n_vec = {(vec[0] >= 0) ? 1 : -1, (vec[1] >= 0) ? 1 : -1};
-	n_vec *= radius;
-	return n_vec >= lb_sq && n_vec <= rt_sq;
-}
 constexpr current_float_t epsilon = 5e-3;
+constexpr current_float_t pi = 3.14159265358979323846f;
+
+// Two-dimensional Wendland C2 kernel with compact support r < h.
+// Its normalization scales as h^-2, and its vanishing central gradient avoids
+// the pairing instability encouraged by kernels with a finite gradient at r=0.
 inline current_float_t pressure_core(const point& r, current_float_t h)
 {
-	constexpr current_float_t constant = 4.;
-	current_float_t r_norm = r.get_norm();
-	if (r_norm < h)
-		return constant * std::pow(h - r_norm, 3) / std::pow(h, 4);
-	else
+	if (h <= 0)
 		return 0.;
+	const current_float_t q = r.get_norm() / h;
+	if (q >= 1.f)
+		return 0.;
+	const current_float_t one_minus_q = 1.f - q;
+	const current_float_t one_minus_q2 = one_minus_q * one_minus_q;
+	return (7.f / pi) * one_minus_q2 * one_minus_q2 *
+		(1.f + 4.f * q) / (h * h);
 }
 inline point pressure_core_gradient(const point& r, current_float_t h)
 {
-	constexpr current_float_t constant = -12.f;
-	current_float_t r_norm = r.get_norm();
-	if (r_norm < h && std::abs(r_norm) > epsilon)
-		return constant * (r / r_norm) * std::pow(h - r_norm, 2) / std::pow(h, 4);
-	else
+	if (h <= 0)
 		return {0,0};
+	const current_float_t r2 = r.get_norm2();
+	if (r2 <= 0.f || r2 >= h * h)
+		return {0,0};
+	const current_float_t q = std::sqrt(r2) / h;
+	const current_float_t one_minus_q = 1.f - q;
+	return (-140.f / pi) * one_minus_q * one_minus_q *
+		one_minus_q * r / (h * h * h * h);
 }
 inline current_float_t pressure_core(current_float_t r, current_float_t h)
 {
-	constexpr current_float_t constant = 4.;
-	if (r < h)
-		return constant * std::pow(h - r, 3) / std::pow(h, 4);
-	else
+	if (h <= 0 || r < 0 || r >= h)
 		return 0.;
+	const current_float_t q = r / h;
+	const current_float_t one_minus_q = 1.f - q;
+	const current_float_t one_minus_q2 = one_minus_q * one_minus_q;
+	return (7.f / pi) * one_minus_q2 * one_minus_q2 *
+		(1.f + 4.f * q) / (h * h);
 }
 inline current_float_t inverse_pressure_core(current_float_t d, current_float_t h)
 {
-	if (0 <= d && d <= h)
-		return h - std::pow(h * h * h * h * d / 4., 1. / 3.);
-	else return 0;
+	if (h <= 0 || d >= pressure_core(0.f, h))
+		return 0.f;
+	if (d <= 0)
+		return h;
+
+	current_float_t lower = 0.f;
+	current_float_t upper = h;
+	for (int iteration = 0; iteration < 24; iteration++)
+	{
+		const current_float_t middle = (lower + upper) * 0.5f;
+		if (pressure_core(middle, h) > d)
+			lower = middle;
+		else
+			upper = middle;
+	}
+	return (lower + upper) * 0.5f;
 }
 };
 
@@ -128,7 +137,9 @@ inline void draw_smooth_circle(const float x, const float y, const float r, cons
 
 struct particle
 {
-	static constexpr int desired_amount_of_interactions = 10;//25^(2/3) ~ 8.5f//+1 for noninteractive particle
+	// Includes the particle itself. A larger two-dimensional stencil reduces
+	// visible lattice locking and gives the pressure estimate useful support.
+	static constexpr int desired_amount_of_interactions = 24;
 	int interactions_count;
 	point position;
 	point velocity;
@@ -218,6 +229,7 @@ struct node
 		leftbottom = 0, lefttop = 1, righttop = 2, rightbottom = 3, null = 4
 	};
 	int particles_count_in_subtrees;
+	uint32_t spatial_index;
 	particle mass_center;
 	node* left_bottom;
 	node* left_top;
@@ -232,6 +244,7 @@ struct node
 		null_node = nullptr;
 		left_bottom = left_top = right_bottom = right_top = parent = nullptr;
 		particles_count_in_subtrees = 0;
+		spatial_index = (std::numeric_limits<uint32_t>::max)();
 		leftbottom_corner = righttop_corner = {0, 0};
 		mass_center = particle();
 	}
@@ -336,58 +349,415 @@ struct grav_eq_iteration_buffers
 {
 	vecnode subtree_traversal;
 	vecnode radial_nodes;
-	vecnode first_corad;
-	vecnode second_corad;
 	vecnode gravity_traversal;
-	vecnode radius_traversal;
 };
 
-//some time before it was an object...
-//not more than O(logN) in case of *not specifically built tree*
-inline void find_nodes_in_radius(
-	node* center,
-	current_float_t radius,
-	vecnode& results,
-	vecnode& traversal,
-	const point* source_override = nullptr)
+struct sph_neighbor_grid
 {
-	const point source = source_override ? *source_override : center->mass_center.position;
-	while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
-		center = center->parent;
-	results.clear();
-	traversal.clear();
-	traversal.reserve(center->particles_count_in_subtrees + 1);
-	node* cur_node = center;
-	node** ptemp = &center;
-	while (true)
+	struct grid_entry
 	{
-		if (cur_node)
-		{
-			if (cur_node->particles_count_in_subtrees)
-			{
-				for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++)
-				{
-					if (*(ptemp = cur_node->get_dptr(i)) &&
-						grav_eq_utils::square_n_circle_intersection((*ptemp)->leftbottom_corner, (*ptemp)->righttop_corner, source, radius))
-						traversal.push_back(*ptemp);
-				}
-			}
-			else if (std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon &&
-				grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position))
-			{
-				results.push_back(cur_node);
-			}
-		}
-		if (!traversal.empty())
-		{
-			cur_node = traversal.back();
-			traversal.pop_back();
-		}
-		else
-			break;
+		uint64_t key;
+		uint32_t particle_index;
+	};
+
+	struct cell_range
+	{
+		uint64_t key;
+		uint32_t begin;
+		uint32_t end;
+	};
+
+	static constexpr uint32_t invalid_index =
+		(std::numeric_limits<uint32_t>::max)();
+	static constexpr int coordinate_bits = 29;
+	static constexpr uint64_t coordinate_mask =
+		(uint64_t{1} << coordinate_bits) - 1;
+
+	vecnode particle_nodes;
+	vecnode tree_traversal;
+	std::vector<uint8_t> particle_levels;
+	std::vector<grid_entry> entries;
+	std::vector<cell_range> cells;
+	std::vector<uint32_t> hash_slots;
+	std::vector<std::pair<uint32_t, uint32_t>> interacting_pairs;
+	std::vector<uint32_t> neighbor_offsets;
+	std::vector<uint32_t> neighbors;
+	std::vector<current_float_t> cached_densities;
+	std::vector<current_float_t> cached_energies;
+	std::vector<uint32_t> degrees;
+	std::vector<uint32_t> cursors;
+	point domain_leftbottom = {0.f, 0.f};
+	current_float_t domain_size = 0.f;
+	current_float_t finest_cell_size = 0.f;
+	uint8_t finest_level_bits = 0;
+	uint8_t largest_occupied_level = 0;
+
+	inline static uint64_t mix_key(uint64_t value)
+	{
+		value ^= value >> 33;
+		value *= UINT64_C(0xff51afd7ed558ccd);
+		value ^= value >> 33;
+		value *= UINT64_C(0xc4ceb9fe1a85ec53);
+		value ^= value >> 33;
+		return value;
 	}
-	//printf("radius_nodes: %i\n", rad_nodes->size());
-}
+
+	inline static uint64_t make_key(
+		uint8_t level,
+		uint32_t x,
+		uint32_t y)
+	{
+		return (uint64_t{level} << (coordinate_bits * 2)) |
+			((uint64_t{x} & coordinate_mask) << coordinate_bits) |
+			(uint64_t{y} & coordinate_mask);
+	}
+
+	inline uint32_t cell_count_at(uint8_t level) const
+	{
+		return uint32_t{1} << (finest_level_bits - level);
+	}
+
+	inline current_float_t cell_size_at(uint8_t level) const
+	{
+		return std::ldexp(finest_cell_size, level);
+	}
+
+	inline uint32_t coordinate_at(
+		current_float_t value,
+		current_float_t minimum,
+		current_float_t cell_size,
+		uint32_t cell_count) const
+	{
+		const auto raw_coordinate = static_cast<int64_t>(
+			std::floor((value - minimum) / cell_size));
+		return static_cast<uint32_t>((std::clamp)(
+			raw_coordinate,
+			int64_t{0},
+			static_cast<int64_t>(cell_count) - 1));
+	}
+
+	inline const cell_range* find_cell(uint64_t key) const
+	{
+		if (hash_slots.empty())
+			return nullptr;
+		const size_t mask = hash_slots.size() - 1;
+		size_t slot = static_cast<size_t>(mix_key(key)) & mask;
+		while (hash_slots[slot] != invalid_index)
+		{
+			const cell_range& cell = cells[hash_slots[slot]];
+			if (cell.key == key)
+				return &cell;
+			slot = (slot + 1) & mask;
+		}
+		return nullptr;
+	}
+
+	inline void collect_particle_nodes(node* root)
+	{
+		particle_nodes.clear();
+		tree_traversal.clear();
+		if (!root ||
+			(!root->particles_count_in_subtrees &&
+				std::abs(root->mass_center.mass) <= grav_eq_utils::epsilon))
+			return;
+
+		tree_traversal.push_back(root);
+		while (!tree_traversal.empty())
+		{
+			node* current_node = tree_traversal.back();
+			tree_traversal.pop_back();
+			if (!current_node->particles_count_in_subtrees)
+			{
+				current_node->spatial_index =
+					static_cast<uint32_t>(particle_nodes.size());
+				particle_nodes.push_back(current_node);
+				continue;
+			}
+
+			for (int position = node::positioning::leftbottom;
+				position < node::positioning::null;
+				position++)
+			{
+				if (node* child = current_node->get(
+					static_cast<node::positioning>(position)))
+					tree_traversal.push_back(child);
+			}
+		}
+	}
+
+	inline void build_cell_table()
+	{
+		std::sort(
+			entries.begin(),
+			entries.end(),
+			[](const grid_entry& lhs, const grid_entry& rhs)
+			{
+				if (lhs.key != rhs.key)
+					return lhs.key < rhs.key;
+				return lhs.particle_index < rhs.particle_index;
+			});
+
+		cells.clear();
+		for (uint32_t begin = 0; begin < entries.size();)
+		{
+			uint32_t end = begin + 1;
+			while (end < entries.size() &&
+				entries[end].key == entries[begin].key)
+				end++;
+			cells.push_back({entries[begin].key, begin, end});
+			begin = end;
+		}
+
+		size_t slot_count = 8;
+		while (slot_count < cells.size() * 2)
+			slot_count *= 2;
+		hash_slots.assign(slot_count, invalid_index);
+		const size_t mask = slot_count - 1;
+		for (uint32_t cell_index = 0; cell_index < cells.size(); cell_index++)
+		{
+			size_t slot =
+				static_cast<size_t>(mix_key(cells[cell_index].key)) & mask;
+			while (hash_slots[slot] != invalid_index)
+				slot = (slot + 1) & mask;
+			hash_slots[slot] = cell_index;
+		}
+	}
+
+	inline void build_neighbor_graph(node* root)
+	{
+		collect_particle_nodes(root);
+		const size_t particle_count = particle_nodes.size();
+		particle_levels.resize(particle_count);
+		entries.resize(particle_count);
+		interacting_pairs.clear();
+		neighbor_offsets.assign(particle_count + 1, 0);
+		neighbors.clear();
+		cached_densities.clear();
+		cached_energies.clear();
+		if (!particle_count)
+			return;
+
+		domain_leftbottom = root->leftbottom_corner;
+		domain_size =
+			root->righttop_corner[0] - root->leftbottom_corner[0];
+		const current_float_t minimum_resolved_diameter =
+			(std::max)(domain_size * current_float_t{1e-6f},
+				2.f * (*std::min_element(
+					particle_nodes.begin(),
+					particle_nodes.end(),
+					[](const node* lhs, const node* rhs)
+					{
+						return lhs->mass_center.radius <
+							rhs->mass_center.radius;
+					}))->mass_center.radius);
+		const current_float_t cell_ratio =
+			(std::max)(domain_size / minimum_resolved_diameter, 1.f);
+		finest_level_bits = static_cast<uint8_t>((std::clamp)(
+			static_cast<int>(std::ceil(std::log2(cell_ratio))),
+			0,
+			24));
+		finest_cell_size = std::ldexp(domain_size, -finest_level_bits);
+		largest_occupied_level = 0;
+
+		for (uint32_t particle_index = 0;
+			particle_index < particle_count;
+			particle_index++)
+		{
+			const particle& current_particle =
+				particle_nodes[particle_index]->mass_center;
+			const current_float_t diameter =
+				(std::max)(2.f * current_particle.radius,
+					finest_cell_size);
+			const current_float_t level_ratio =
+				(std::max)(diameter / finest_cell_size, 1.f);
+			const uint8_t level = static_cast<uint8_t>((std::clamp)(
+				static_cast<int>(std::ceil(std::log2(level_ratio))),
+				0,
+				static_cast<int>(finest_level_bits)));
+			particle_levels[particle_index] = level;
+			largest_occupied_level =
+				(std::max)(largest_occupied_level, level);
+
+			const current_float_t cell_size = cell_size_at(level);
+			const uint32_t cell_count = cell_count_at(level);
+			const uint32_t x = coordinate_at(
+				current_particle.position[0],
+				domain_leftbottom[0],
+				cell_size,
+				cell_count);
+			const uint32_t y = coordinate_at(
+				current_particle.position[1],
+				domain_leftbottom[1],
+				cell_size,
+				cell_count);
+			entries[particle_index] = {
+				make_key(level, x, y),
+				particle_index};
+		}
+		build_cell_table();
+
+		interacting_pairs.reserve(
+			particle_count * particle::desired_amount_of_interactions);
+		for (uint32_t first_index = 0;
+			first_index < particle_count;
+			first_index++)
+		{
+			const particle& first = particle_nodes[first_index]->mass_center;
+			const uint8_t first_level = particle_levels[first_index];
+			for (uint8_t level = first_level;
+				level <= largest_occupied_level;
+				level++)
+			{
+				const current_float_t cell_size = cell_size_at(level);
+				const uint32_t cell_count = cell_count_at(level);
+				const uint32_t center_x = coordinate_at(
+					first.position[0],
+					domain_leftbottom[0],
+					cell_size,
+					cell_count);
+				const uint32_t center_y = coordinate_at(
+					first.position[1],
+					domain_leftbottom[1],
+					cell_size,
+					cell_count);
+
+				for (int y_offset = -1; y_offset <= 1; y_offset++)
+					for (int x_offset = -1; x_offset <= 1; x_offset++)
+					{
+						const int64_t x =
+							static_cast<int64_t>(center_x) + x_offset;
+						const int64_t y =
+							static_cast<int64_t>(center_y) + y_offset;
+						if (x < 0 || y < 0 ||
+							x >= cell_count || y >= cell_count)
+							continue;
+						const cell_range* cell = find_cell(make_key(
+							level,
+							static_cast<uint32_t>(x),
+							static_cast<uint32_t>(y)));
+						if (!cell)
+							continue;
+
+						for (uint32_t entry_index = cell->begin;
+							entry_index < cell->end;
+							entry_index++)
+						{
+							const uint32_t second_index =
+								entries[entry_index].particle_index;
+							if (level == first_level &&
+								second_index <= first_index)
+								continue;
+							const particle& second =
+								particle_nodes[second_index]->mass_center;
+							const current_float_t support_radius =
+								(std::max)(first.radius, second.radius);
+							if ((first.position - second.position).get_norm2() <=
+								support_radius * support_radius)
+								interacting_pairs.push_back({
+									first_index,
+									second_index});
+						}
+					}
+			}
+		}
+
+		degrees.assign(particle_count, 1);
+		for (const auto& [first, second] : interacting_pairs)
+		{
+			degrees[first]++;
+			degrees[second]++;
+		}
+		for (size_t index = 0; index < particle_count; index++)
+			neighbor_offsets[index + 1] =
+				neighbor_offsets[index] + degrees[index];
+		neighbors.resize(neighbor_offsets.back());
+		cursors.assign(neighbor_offsets.begin(), neighbor_offsets.end() - 1);
+		for (uint32_t index = 0; index < particle_count; index++)
+			neighbors[cursors[index]++] = index;
+		for (const auto& [first, second] : interacting_pairs)
+		{
+			neighbors[cursors[first]++] = second;
+			neighbors[cursors[second]++] = first;
+		}
+
+		cached_densities.assign(particle_count, 0.f);
+		for (uint32_t source_index = 0;
+			source_index < particle_count;
+			source_index++)
+		{
+			const particle& source =
+				particle_nodes[source_index]->mass_center;
+			current_float_t density = 0.f;
+			for (uint32_t offset = neighbor_offsets[source_index];
+				offset < neighbor_offsets[source_index + 1];
+				offset++)
+			{
+				const particle& neighbor =
+					particle_nodes[neighbors[offset]]->mass_center;
+				const point difference =
+					source.position - neighbor.position;
+				const current_float_t support_radius =
+					(std::max)(source.radius, neighbor.radius);
+				density += neighbor.mass * grav_eq_utils::pressure_core(
+					difference,
+					support_radius);
+			}
+			cached_densities[source_index] = density;
+		}
+
+		cached_energies.assign(particle_count, 0.f);
+		for (uint32_t source_index = 0;
+			source_index < particle_count;
+			source_index++)
+		{
+			const particle& source =
+				particle_nodes[source_index]->mass_center;
+			current_float_t energy = 0.f;
+			for (uint32_t offset = neighbor_offsets[source_index];
+				offset < neighbor_offsets[source_index + 1];
+				offset++)
+			{
+				const uint32_t neighbor_index = neighbors[offset];
+				const particle& neighbor =
+					particle_nodes[neighbor_index]->mass_center;
+				const point difference =
+					source.position - neighbor.position;
+				const current_float_t support_radius =
+					(std::max)(source.radius, neighbor.radius);
+				energy +=
+					(neighbor.mass / cached_densities[neighbor_index]) *
+					neighbor.energy * grav_eq_utils::pressure_core(
+						difference,
+						support_radius);
+			}
+			cached_energies[source_index] = energy;
+		}
+	}
+
+	inline void collect_neighbors(node* source, vecnode& results) const
+	{
+		results.clear();
+		if (!source || source->spatial_index == invalid_index ||
+			source->spatial_index + 1 >= neighbor_offsets.size())
+			return;
+		const uint32_t source_index = source->spatial_index;
+		const uint32_t begin = neighbor_offsets[source_index];
+		const uint32_t end = neighbor_offsets[source_index + 1];
+		results.reserve(end - begin);
+		for (uint32_t offset = begin; offset < end; offset++)
+			results.push_back(particle_nodes[neighbors[offset]]);
+	}
+
+	inline current_float_t density_at(const node* source) const
+	{
+		return cached_densities[source->spatial_index];
+	}
+
+	inline current_float_t energy_at(const node* source) const
+	{
+		return cached_energies[source->spatial_index];
+	}
+};
 
 struct quad_tree
 {
@@ -714,6 +1084,7 @@ struct grav_eq_processor
 	current_float_t total_time;
 	const current_float_t __size;
 	quad_tree current, buffer;
+	sph_neighbor_grid spatial_neighbors;
 	std::mutex buffer_mutex;
 	std::mutex pre_swap;
 	std::mutex pause;
@@ -743,58 +1114,14 @@ struct grav_eq_processor
 			current.push(prt);
 	}
 
-	inline static current_float_t get_density_at(
-		node* begin,
-		vecnode& reserved_rad_nodes,
-		vecnode& radius_traversal,
-		particle* rsv_part = nullptr)
+	inline current_float_t get_density_at(node* source_node) const
 	{
-		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		find_nodes_in_radius(
-			begin,
-			source.radius,
-			reserved_rad_nodes,
-			radius_traversal,
-			rsv_part ? &rsv_part->position : nullptr);
-		current_float_t sum = 0;
-		for (auto& cur_node : reserved_rad_nodes)
-		{
-			auto pos_difference = source.position - cur_node->mass_center.position;
-			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
-			if (is_beyond_radius(pos_difference, max_radius))
-				continue;
-			sum += cur_node->mass_center.mass * grav_eq_utils::pressure_core(pos_difference, max_radius);
-		}
-		return sum;
+		return spatial_neighbors.density_at(source_node);
 	}
 
-	inline static current_float_t get_energy_at(
-		node* begin,
-		vecnode& reserved_rad_nodes,
-		vecnode& reserved_drn,
-		vecnode& radius_traversal,
-		particle* rsv_part = nullptr)
+	inline current_float_t get_energy_at(node* source_node) const
 	{
-		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		find_nodes_in_radius(
-			begin,
-			source.radius,
-			reserved_rad_nodes,
-			radius_traversal,
-			rsv_part ? &rsv_part->position : nullptr);
-		current_float_t sum = 0;
-		for (auto& cur_node : reserved_rad_nodes)
-		{
-			auto pos_difference = source.position - cur_node->mass_center.position;
-			auto max_radius = (std::max)(source.radius, cur_node->mass_center.radius);
-			if (is_beyond_radius(pos_difference, max_radius))
-				continue;
-			sum +=
-				(cur_node->mass_center.mass /
-					get_density_at(cur_node, reserved_drn, radius_traversal))
-				* cur_node->mass_center.energy * grav_eq_utils::pressure_core(pos_difference, max_radius);
-		}
-		return sum;
+		return spatial_neighbors.energy_at(source_node);
 	}
 
 	inline static point grav_force(const particle& center, const particle& distant_prt)
@@ -886,6 +1213,7 @@ struct grav_eq_processor
 	};
 
 	inline iteration_result iterate_particle(
+		node* particle_node,
 		particle& current_prt,
 		grav_eq_iteration_buffers& buffers,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step)
@@ -895,31 +1223,19 @@ struct grav_eq_processor
 		constexpr bool is_complete_SPH = true;
 		node* cur_node = current.root_node;
 		int interactions_counter = 0;
-		buffers.first_corad.clear();
-		buffers.second_corad.clear();
 		current_float_t cur_density = 0;
 		current_float_t cur_energy = 0;
 		current_float_t cur_pressure = 0;
 
 		if constexpr (is_complete_SPH)
 		{
-			find_nodes_in_radius(
-				cur_node,
-				current_prt.radius,
-				buffers.radial_nodes,
-				buffers.radius_traversal,
-				&current_prt.position);
+			spatial_neighbors.collect_neighbors(
+				particle_node,
+				buffers.radial_nodes);
 			cur_density = get_density_at(
-				cur_node,
-				buffers.first_corad,
-				buffers.radius_traversal,
-				&current_prt);
+				particle_node);
 			cur_energy = get_energy_at(
-				cur_node,
-				buffers.first_corad,
-				buffers.second_corad,
-				buffers.radius_traversal,
-				&current_prt);
+				particle_node);
 			cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
 		}
 
@@ -984,7 +1300,7 @@ struct grav_eq_processor
 				(1.f + std::pow(
 					(current_float_t)particle::desired_amount_of_interactions /
 					(current_prt.interactions_count + 1),
-					0.33333f));
+					0.5f));
 			dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1f);
 			dR -= current_prt.radius;
 		}
@@ -994,23 +1310,20 @@ struct grav_eq_processor
 		{
 			if (!is_complete_SPH)
 				break;
+			if (it_node == particle_node)
+				continue;
 
 			auto pos_difference = current_prt.position - it_node->mass_center.position;
 			auto vel_difference = current_prt.velocity - it_node->mass_center.velocity;
 			auto avg_radius = (current_prt.radius + it_node->mass_center.radius) / 2.0f;
 
-			if (is_beyond_radius(pos_difference, avg_radius) || pos_difference.get_norm2() < grav_eq_utils::epsilon)
+			if (is_beyond_radius(pos_difference, avg_radius))
 				continue;
 
 			auto inner_node_density = get_density_at(
-				it_node,
-				buffers.first_corad,
-				buffers.radius_traversal);
+				it_node);
 			auto inner_node_energy = get_energy_at(
-				it_node,
-				buffers.first_corad,
-				buffers.second_corad,
-				buffers.radius_traversal);
+				it_node);
 			auto inner_node_pressure = get_pressure(inner_node_density, inner_node_energy, polytropic_coef, heat_capacity);
 			auto core_gradient = grav_eq_utils::pressure_core_gradient(pos_difference, avg_radius);
 
@@ -1098,12 +1411,14 @@ struct grav_eq_processor
 	}
 
 	inline particle iterate_over_particle(
-		particle& current_prt,
+		node* particle_node,
 		grav_eq_iteration_buffers& buffers,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step)
 	{
+		particle& current_prt = particle_node->mass_center;
 		particle local_prt = current_prt;
 		const auto ans = iterate_particle(
+			particle_node,
 			local_prt,
 			buffers,
 			heat_capacity, polytropic_coef, time_step);
@@ -1150,7 +1465,7 @@ struct grav_eq_processor
 				else
 				{
 					auto prt = iterate_over_particle(
-						cur_node->mass_center,
+						cur_node,
 						buffers,
 						heat_capacity,
 						polytropic_coef,
@@ -1274,9 +1589,15 @@ struct grav_eq_processor
 		}
 	}
 
+	inline void prepare_iteration()
+	{
+		spatial_neighbors.build_neighbor_graph(current.root_node);
+		build_subdivision_tasks();
+	}
+
 	inline void subdivide_tree()
 	{
-		build_subdivision_tasks();
+		prepare_iteration();
 
 		auto now = std::chrono::steady_clock::now();
 
