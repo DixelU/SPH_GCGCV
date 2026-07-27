@@ -2991,6 +2991,7 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed) {
 	vecnode radial_nodes;
 	vecnode first_corad;
 	vecnode second_corad;
+	vecnode gravity_nodes;
 	const HeadlessSimulationStats initial = CollectSimulationStats(processor.current);
 	const int report_interval = (std::max)(requested_steps / 10, 1);
 	printf(
@@ -3014,7 +3015,8 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed) {
 			&traversal_nodes,
 			&radial_nodes,
 			&first_corad,
-			&second_corad);
+			&second_corad,
+			&gravity_nodes);
 		processor.current.clear();
 		processor.current.swap(processor.buffer);
 		processor.total_time += processor.local_time_step;
@@ -3052,6 +3054,22 @@ int RunNumericalSelfTests() {
 		return std::abs(lhs - rhs) <= tolerance;
 	};
 
+	buffered_queue_spsc<int, 4> test_buffer;
+	std::vector<int*> buffered_values;
+	for (int value = 0; value < 10; value++)
+		buffered_values.push_back(&test_buffer.emplace(value));
+	bool buffer_is_stable = test_buffer.approximate_size() == buffered_values.size();
+	for (int value = 0; value < (int)buffered_values.size(); value++)
+		buffer_is_stable = buffer_is_stable && *buffered_values[value] == value;
+	test_buffer.clear();
+	buffer_is_stable = buffer_is_stable &&
+		test_buffer.empty() &&
+		test_buffer.approximate_size() == 0 &&
+		test_buffer.emplace(42) == 42;
+	check(
+		buffer_is_stable,
+		"buffered allocator preserves addresses across slabs and resets for reuse");
+
 	particle light_center({ -1.f, 0.f }, { 0.f, 0.f }, { 0.f, 0.f }, 2.f, 0.5f, 1.f);
 	particle heavy_center = light_center;
 	heavy_center.mass = 2000.f;
@@ -3084,11 +3102,13 @@ int RunNumericalSelfTests() {
 	vecnode radial_nodes;
 	vecnode first_corad;
 	vecnode second_corad;
+	vecnode gravity_nodes;
 	particle inertial_result = inertial_processor.iterate_over_particle(
 		inertial_processor.current.root_node->mass_center,
 		&radial_nodes,
 		&first_corad,
 		&second_corad,
+		&gravity_nodes,
 		inertial_processor.heat_capacity,
 		inertial_processor.polytropic_coef,
 		0.01f);

@@ -345,5 +345,9 @@ ASALocalRun/
 # BeatPulse healthcheck temp database
 healthchecksdb
 
+# Local Windows Performance Analyzer captures and symbol caches
+performance/*.etl
+performance/symcache/
+
 # Backup folder for Package Reference Convert tool in Visual Studio 2017
 MigrationBackup/

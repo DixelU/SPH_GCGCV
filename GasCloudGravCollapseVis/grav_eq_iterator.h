@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "consts.h"
+#include "buffered_queue_spsc.h"
 #include "field_vis.h"
 #include "sq_matrix.h"
 #include "weird_hacks.h"
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <complex>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -336,51 +338,33 @@ inline void radius_node_catcher(node* center, current_float_t radius, std::vecto
 struct quad_tree {
 	//node*, node* = (temp,cur_node)
 	using positioning = node::positioning;
+	using node_buffer = buffered_queue_spsc<node, 1024>;
 
 	node* root_node;
-	//node_reserver* reserver;
+	std::unique_ptr<node_buffer> node_storage;
 	recursive_mutex locker;
 	recursive_mutex swap_prevention;
-	quad_tree() /*: reserver(new node_reserver())*/ {
-		root_node = nullptr;
-	}
+	quad_tree() :
+		root_node(nullptr),
+		node_storage(std::make_unique<node_buffer>())
+	{}
 	quad_tree(current_float_t size) : quad_tree() {
-		//root_node = reserver->get_unused();
-		root_node = new node();
+		root_node = &node_storage->emplace();
 		root_node->leftbottom_corner = { -size * 0.5f, -size * 0.5f };
 		root_node->righttop_corner = { size * 0.5f, size * 0.5f };
 	}
-	~quad_tree() {
-		if (root_node) {
-			clear();
-			delete root_node;
-			root_node = nullptr;
-		}
-	}
+	~quad_tree() = default;
 
 	inline void clear() {
 		if (!root_node)
 			return;
 		std::lock_guard<std::recursive_mutex> guard(locker);
-		std::vector<node*> cur_nodes;
-		for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
-			node*& child = root_node->get(i);
-			if (child) {
-				cur_nodes.push_back(child);
-				child = nullptr;
-			}
-		}
-		while (!cur_nodes.empty()) {
-			node* cur_node = cur_nodes.back();
-			cur_nodes.pop_back();
-			for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
-				if (node* child = cur_node->get(i))
-					cur_nodes.push_back(child);
-			}
-			delete cur_node;
-		}
-		root_node->particles_count_in_subtrees = 0;
-		root_node->mass_center = particle();
+		const point leftbottom_corner = root_node->leftbottom_corner;
+		const point righttop_corner = root_node->righttop_corner;
+		node_storage->clear();
+		root_node = &node_storage->emplace();
+		root_node->leftbottom_corner = leftbottom_corner;
+		root_node->righttop_corner = righttop_corner;
 	}
 
 	inline void swap(quad_tree &tree) {
@@ -389,7 +373,8 @@ struct quad_tree {
 		locker.lock();
 		tree.locker.lock();
 
-		std::swap(root_node,tree.root_node);
+		std::swap(root_node, tree.root_node);
+		std::swap(node_storage, tree.node_storage);
 		
 		tree.locker.unlock();
 		locker.unlock();
@@ -419,7 +404,7 @@ struct quad_tree {
 			node::positioning mc_pos = node::get_positioning(nd, nd->mass_center.position);
 			node** temp = nd->get_dptr(mc_pos);
 			if (!*temp) {
-				*temp = new node(nd, mc_pos);
+				*temp = &node_storage->emplace(nd, mc_pos);
 				(*temp)->mass_center = nd->mass_center;
 				//nd->particles_count_in_subtrees++;
 			}
@@ -430,7 +415,7 @@ struct quad_tree {
 		prt_pos = node::get_positioning(nd, prt.position);
 		temp = nd->get_dptr(prt_pos);
 		if (!*temp) 
-			*temp = new node(nd, prt_pos);
+			*temp = &node_storage->emplace(nd, prt_pos);
 		nd = *temp;
 		level++;
 		goto prp_begining;
@@ -624,6 +609,7 @@ struct grav_eq_processor {
 		vecnode rad_nodes;
 		vecnode first_corad;
 		vecnode second_corad;
+		vecnode gravity_nodes;
 		std::vector<node*> cur_nodes;
 		vecnode* root_ptrs = nullptr;
 		int id = 0;
@@ -717,12 +703,15 @@ struct grav_eq_processor {
 			std::pow(softened_distance_squared, 1.5f);
 	}
 
-	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const current_float_t error_edge_squared)
+	inline static point barnes_hutt_force_in_subtree(
+		node* cur_node,
+		const particle& current,
+		const current_float_t error_edge_squared,
+		vecnode* traversal_nodes)
 	{
 		point gravitational_force = { 0, 0 };
-		std::vector<node*> cur_nodes;
-
-		cur_nodes.reserve(cur_node->particles_count_in_subtrees);
+		traversal_nodes->clear();
+		traversal_nodes->reserve(cur_node->particles_count_in_subtrees);
 		constexpr bool is_real_gravity = false;
 		auto get_squared_error = [](const particle& cur, node* check_node) {
 			return 0.5f * (check_node->leftbottom_corner - check_node->righttop_corner).get_norm2() / (cur.position - check_node->mass_center.position).get_norm2();
@@ -735,7 +724,7 @@ struct grav_eq_processor {
 					( is_real_gravity || get_squared_error(current,cur_node) >= error_edge_squared)) {
 					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 						if (*(ptemp = cur_node->get_dptr(i))) {
-							cur_nodes.push_back(*ptemp);
+							traversal_nodes->push_back(*ptemp);
 						}
 					}
 				}
@@ -744,9 +733,9 @@ struct grav_eq_processor {
 						grav_force(current, cur_node->mass_center);
 				}
 			}
-			if (cur_nodes.size()) {
-				cur_node = cur_nodes.back();
-				cur_nodes.pop_back();
+			if (!traversal_nodes->empty()) {
+				cur_node = traversal_nodes->back();
+				traversal_nodes->pop_back();
 			}
 			else
 				break;
@@ -777,7 +766,12 @@ struct grav_eq_processor {
 		current_float_t dT_CFL;
 	};
 
-	inline iteration_result iterate_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
+	inline iteration_result iterate_particle(
+		particle& current_prt,
+		vecnode* rad_vector,
+		vecnode* corad_vector1,
+		vecnode* corad_vector2,
+		vecnode* gravity_nodes,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step)
 	{
 		constexpr current_float_t error_edge_squared = 0.05f;
@@ -798,7 +792,11 @@ struct grav_eq_processor {
 			cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
 		}
 
-		point gravity = barnes_hutt_force_in_subtree(cur_node, current_prt, error_edge_squared);
+		point gravity = barnes_hutt_force_in_subtree(
+			cur_node,
+			current_prt,
+			error_edge_squared,
+			gravity_nodes);
 		
 		current_float_t c_i = 0;
 		if constexpr (is_complete_SPH)
@@ -958,11 +956,16 @@ struct grav_eq_processor {
 		return { total_acceleration, dE, dR, interactions_counter, delta_time_CFL };
 	}
 
-	inline particle iterate_over_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
+	inline particle iterate_over_particle(
+		particle& current_prt,
+		vecnode* rad_vector,
+		vecnode* corad_vector1,
+		vecnode* corad_vector2,
+		vecnode* gravity_nodes,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step) {
 		particle local_prt = current_prt;
 		const auto ans = iterate_particle(
-			local_prt, rad_vector, corad_vector1, corad_vector2,
+			local_prt, rad_vector, corad_vector1, corad_vector2, gravity_nodes,
 			heat_capacity, polytropic_coef, time_step);
 
 		local_prt.energy += time_step * ans.dE;
@@ -983,7 +986,13 @@ struct grav_eq_processor {
 		return local_prt;
 	}
 
-	inline void iterate_subtree(node* subtree_root, std::vector<node*>* cur_nodes, vecnode* rad_nodes, vecnode* first_corad, vecnode* second_corad) {
+	inline void iterate_subtree(
+		node* subtree_root,
+		std::vector<node*>* cur_nodes,
+		vecnode* rad_nodes,
+		vecnode* first_corad,
+		vecnode* second_corad,
+		vecnode* gravity_nodes) {
 		cur_nodes->clear();
 		node* cur_node = subtree_root;
 		node** ptemp;
@@ -997,7 +1006,15 @@ struct grav_eq_processor {
 					}
 				}
 				else { 
-					auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
+					auto prt = iterate_over_particle(
+						cur_node->mass_center,
+						rad_nodes,
+						first_corad,
+						second_corad,
+						gravity_nodes,
+						heat_capacity,
+						polytropic_coef,
+						local_time_step);
 					cur_node->mass_center.visited = flickering;
 					const bool finite_particle =
 						std::isfinite(prt.position[0]) && std::isfinite(prt.position[1]) &&
@@ -1142,7 +1159,8 @@ struct grav_eq_processor {
 						&info->cur_nodes,
 						&info->rad_nodes,
 						&info->first_corad,
-						&info->second_corad);
+						&info->second_corad,
+						&info->gravity_nodes);
 
 				//printf("thread finished\n");
 
