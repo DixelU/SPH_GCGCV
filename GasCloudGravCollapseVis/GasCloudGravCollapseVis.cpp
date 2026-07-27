@@ -2987,11 +2987,7 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed) {
 	}
 
 	grav_eq_processor processor(particles, size);
-	vecnode traversal_nodes;
-	vecnode radial_nodes;
-	vecnode first_corad;
-	vecnode second_corad;
-	vecnode gravity_nodes;
+	grav_eq_iteration_buffers iteration_buffers;
 	const HeadlessSimulationStats initial = CollectSimulationStats(processor.current);
 	const int report_interval = (std::max)(requested_steps / 10, 1);
 	printf(
@@ -3012,11 +3008,7 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed) {
 			(current_float_t)1e-8f);
 		processor.iterate_subtree(
 			processor.current.root_node,
-			&traversal_nodes,
-			&radial_nodes,
-			&first_corad,
-			&second_corad,
-			&gravity_nodes);
+			iteration_buffers);
 		processor.current.clear();
 		processor.current.swap(processor.buffer);
 		processor.total_time += processor.local_time_step;
@@ -3099,16 +3091,10 @@ int RunNumericalSelfTests() {
 	particle inertial_particle(
 		{ 1.f, 2.f }, { 3.f, -4.f }, { 0.f, 0.f }, 1.f, 1.f, 1.f);
 	grav_eq_processor inertial_processor({ inertial_particle }, 100.f);
-	vecnode radial_nodes;
-	vecnode first_corad;
-	vecnode second_corad;
-	vecnode gravity_nodes;
+	grav_eq_iteration_buffers iteration_buffers;
 	particle inertial_result = inertial_processor.iterate_over_particle(
 		inertial_processor.current.root_node->mass_center,
-		&radial_nodes,
-		&first_corad,
-		&second_corad,
-		&gravity_nodes,
+		iteration_buffers,
 		inertial_processor.heat_capacity,
 		inertial_processor.polytropic_coef,
 		0.01f);

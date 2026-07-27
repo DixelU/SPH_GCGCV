@@ -298,16 +298,31 @@ struct node {
 	}
 };
 
+using vecnode = std::vector<node*>;
+
+struct grav_eq_iteration_buffers {
+	vecnode subtree_traversal;
+	vecnode radial_nodes;
+	vecnode first_corad;
+	vecnode second_corad;
+	vecnode gravity_traversal;
+	vecnode radius_traversal;
+};
+
 //some time before it was an object...
 //not more than O(logN) in case of *not specifically built tree*
-inline void radius_node_catcher(node* center, current_float_t radius, std::vector<node*>* rad_nodes, point* rsv_source = nullptr) {
-	point source = (rsv_source)? *rsv_source:center->mass_center.position;
-	auto count = center->particles_count_in_subtrees;
+inline void find_nodes_in_radius(
+	node* center,
+	current_float_t radius,
+	vecnode& results,
+	vecnode& traversal,
+	const point* source_override = nullptr) {
+	const point source = source_override ? *source_override : center->mass_center.position;
 	while (center->parent && !grav_eq_utils::circle_inside_square(center->leftbottom_corner, center->righttop_corner, source, radius)) //deriving from old style RNC
 		center = center->parent;
-	rad_nodes->clear();
-	std::vector<node*> cur_nodes;
-	cur_nodes.reserve(count + 1);
+	results.clear();
+	traversal.clear();
+	traversal.reserve(center->particles_count_in_subtrees + 1);
 	node* cur_node = center;
 	node** ptemp = &center;
 	while (true) {
@@ -316,18 +331,18 @@ inline void radius_node_catcher(node* center, current_float_t radius, std::vecto
 				for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 					if ( *(ptemp = cur_node->get_dptr(i)) &&
 						grav_eq_utils::square_n_circle_intersection((*ptemp)->leftbottom_corner, (*ptemp)->righttop_corner, source, radius)) 
-						cur_nodes.push_back(*ptemp);
+						traversal.push_back(*ptemp);
 				}
 			}
 			else if(std::abs(cur_node->mass_center.mass) > grav_eq_utils::epsilon && 
 				grav_eq_utils::point_in_circle(source, radius, cur_node->mass_center.position))
 			{
-				rad_nodes->push_back(cur_node);
+				results.push_back(cur_node);
 			}
 		}
-		if (cur_nodes.size()) {
-			cur_node = cur_nodes.back();
-			cur_nodes.pop_back();
+		if (!traversal.empty()) {
+			cur_node = traversal.back();
+			traversal.pop_back();
 		}
 		else
 			break;
@@ -528,8 +543,6 @@ struct quad_tree {
 	}
 };
 
-using vecnode = std::vector<node*>;
-
 class pooled_thread {
 public:
 	enum class state {
@@ -606,11 +619,7 @@ public:
 
 struct grav_eq_processor {
 	struct worker_thread_info {
-		vecnode rad_nodes;
-		vecnode first_corad;
-		vecnode second_corad;
-		vecnode gravity_nodes;
-		std::vector<node*> cur_nodes;
+		grav_eq_iteration_buffers buffers;
 		vecnode* root_ptrs = nullptr;
 		int id = 0;
 	};
@@ -661,9 +670,18 @@ struct grav_eq_processor {
 			current.push(prt);
 	}
 
-	inline static current_float_t get_density_at(node* begin, vecnode& reserved_rad_nodes, particle* rsv_part = nullptr) {
+	inline static current_float_t get_density_at(
+		node* begin,
+		vecnode& reserved_rad_nodes,
+		vecnode& radius_traversal,
+		particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
+		find_nodes_in_radius(
+			begin,
+			source.radius,
+			reserved_rad_nodes,
+			radius_traversal,
+			rsv_part ? &rsv_part->position : nullptr);
 		current_float_t sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
@@ -675,9 +693,19 @@ struct grav_eq_processor {
 		return sum;
 	}
 
-	inline static current_float_t get_energy_at(node* begin, vecnode& reserved_rad_nodes, vecnode& reserved_drn, particle* rsv_part = nullptr) {
+	inline static current_float_t get_energy_at(
+		node* begin,
+		vecnode& reserved_rad_nodes,
+		vecnode& reserved_drn,
+		vecnode& radius_traversal,
+		particle* rsv_part = nullptr) {
 		particle source = (rsv_part) ? *rsv_part : begin->mass_center;
-		radius_node_catcher(begin, source.radius, &reserved_rad_nodes, (rsv_part) ? &rsv_part->position : nullptr);
+		find_nodes_in_radius(
+			begin,
+			source.radius,
+			reserved_rad_nodes,
+			radius_traversal,
+			rsv_part ? &rsv_part->position : nullptr);
 		current_float_t sum = 0;
 		for (auto& cur_node : reserved_rad_nodes) {
 			auto pos_difference = source.position - cur_node->mass_center.position;
@@ -685,7 +713,8 @@ struct grav_eq_processor {
 			if (is_beyond_radius(pos_difference, max_radius))
 				continue;
 			sum += 
-				(cur_node->mass_center.mass / get_density_at(cur_node, reserved_drn))
+				(cur_node->mass_center.mass /
+					get_density_at(cur_node, reserved_drn, radius_traversal))
 				* cur_node->mass_center.energy * grav_eq_utils::pressure_core(pos_difference, max_radius);
 		}
 		return sum;
@@ -768,10 +797,7 @@ struct grav_eq_processor {
 
 	inline iteration_result iterate_particle(
 		particle& current_prt,
-		vecnode* rad_vector,
-		vecnode* corad_vector1,
-		vecnode* corad_vector2,
-		vecnode* gravity_nodes,
+		grav_eq_iteration_buffers& buffers,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step)
 	{
 		constexpr current_float_t error_edge_squared = 0.05f;
@@ -779,16 +805,30 @@ struct grav_eq_processor {
 		constexpr bool is_complete_SPH = true;
 		node* cur_node = current.root_node; 
 		int interactions_counter = 0;
-		corad_vector1->clear();
-		corad_vector2->clear();
+		buffers.first_corad.clear();
+		buffers.second_corad.clear();
 		current_float_t cur_density = 0;
 		current_float_t cur_energy = 0;
 		current_float_t cur_pressure = 0;
 
 		if constexpr (is_complete_SPH) {
-			radius_node_catcher(cur_node, current_prt.radius, rad_vector, &current_prt.position);
-			cur_density = get_density_at(cur_node, *corad_vector1, &current_prt);
-			cur_energy = get_energy_at(cur_node, *corad_vector1, *corad_vector2, &current_prt);
+			find_nodes_in_radius(
+				cur_node,
+				current_prt.radius,
+				buffers.radial_nodes,
+				buffers.radius_traversal,
+				&current_prt.position);
+			cur_density = get_density_at(
+				cur_node,
+				buffers.first_corad,
+				buffers.radius_traversal,
+				&current_prt);
+			cur_energy = get_energy_at(
+				cur_node,
+				buffers.first_corad,
+				buffers.second_corad,
+				buffers.radius_traversal,
+				&current_prt);
 			cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
 		}
 
@@ -796,7 +836,7 @@ struct grav_eq_processor {
 			cur_node,
 			current_prt,
 			error_edge_squared,
-			gravity_nodes);
+			&buffers.gravity_traversal);
 		
 		current_float_t c_i = 0;
 		if constexpr (is_complete_SPH)
@@ -857,7 +897,7 @@ struct grav_eq_processor {
 		}
 
 		//current_float_t max_Pi = 0;
-		for (auto& it_node : *rad_vector)
+		for (auto& it_node : buffers.radial_nodes)
 		{
 			if (!is_complete_SPH)
 				break;
@@ -869,8 +909,15 @@ struct grav_eq_processor {
 			if (is_beyond_radius(pos_difference, avg_radius) || pos_difference.get_norm2() < grav_eq_utils::epsilon)
 				continue;
 
-			auto inner_node_density = get_density_at(it_node, *corad_vector1);
-			auto inner_node_energy = get_energy_at(it_node, *corad_vector1, *corad_vector2);
+			auto inner_node_density = get_density_at(
+				it_node,
+				buffers.first_corad,
+				buffers.radius_traversal);
+			auto inner_node_energy = get_energy_at(
+				it_node,
+				buffers.first_corad,
+				buffers.second_corad,
+				buffers.radius_traversal);
 			auto inner_node_pressure = get_pressure(inner_node_density, inner_node_energy, polytropic_coef, heat_capacity);
 			auto core_gradient = grav_eq_utils::pressure_core_gradient(pos_difference, avg_radius);
 
@@ -958,14 +1005,12 @@ struct grav_eq_processor {
 
 	inline particle iterate_over_particle(
 		particle& current_prt,
-		vecnode* rad_vector,
-		vecnode* corad_vector1,
-		vecnode* corad_vector2,
-		vecnode* gravity_nodes,
+		grav_eq_iteration_buffers& buffers,
 		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step) {
 		particle local_prt = current_prt;
 		const auto ans = iterate_particle(
-			local_prt, rad_vector, corad_vector1, corad_vector2, gravity_nodes,
+			local_prt,
+			buffers,
 			heat_capacity, polytropic_coef, time_step);
 
 		local_prt.energy += time_step * ans.dE;
@@ -988,12 +1033,8 @@ struct grav_eq_processor {
 
 	inline void iterate_subtree(
 		node* subtree_root,
-		std::vector<node*>* cur_nodes,
-		vecnode* rad_nodes,
-		vecnode* first_corad,
-		vecnode* second_corad,
-		vecnode* gravity_nodes) {
-		cur_nodes->clear();
+		grav_eq_iteration_buffers& buffers) {
+		buffers.subtree_traversal.clear();
 		node* cur_node = subtree_root;
 		node** ptemp;
 		while (true) {
@@ -1001,17 +1042,14 @@ struct grav_eq_processor {
 				if (cur_node->particles_count_in_subtrees) {
 					for (node::positioning i = node::positioning::leftbottom; i < node::positioning::null; ((int&)i)++) {
 						if (*(ptemp = cur_node->get_dptr(i))) {
-							cur_nodes->push_back(*ptemp);
+							buffers.subtree_traversal.push_back(*ptemp);
 						}
 					}
 				}
 				else { 
 					auto prt = iterate_over_particle(
 						cur_node->mass_center,
-						rad_nodes,
-						first_corad,
-						second_corad,
-						gravity_nodes,
+						buffers,
 						heat_capacity,
 						polytropic_coef,
 						local_time_step);
@@ -1054,10 +1092,10 @@ struct grav_eq_processor {
 						printf("non-finite particle state rejected\n");
 				}
 			}
-			if (cur_node && cur_nodes->size()) {
+			if (cur_node && !buffers.subtree_traversal.empty()) {
 				cur_node->mass_center.visited = flickering;
-				cur_node = cur_nodes->back();
-				cur_nodes->pop_back();
+				cur_node = buffers.subtree_traversal.back();
+				buffers.subtree_traversal.pop_back();
 			}
 			else
 				break;
@@ -1156,11 +1194,7 @@ struct grav_eq_processor {
 				for (auto& local_root : *info->root_ptrs)
 					iterate_subtree(
 						local_root,
-						&info->cur_nodes,
-						&info->rad_nodes,
-						&info->first_corad,
-						&info->second_corad,
-						&info->gravity_nodes);
+						info->buffers);
 
 				//printf("thread finished\n");
 

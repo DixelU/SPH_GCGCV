@@ -4,6 +4,8 @@
 #include <type_traits>
 #include <limits>
 
+#define WITHOUT_CONSTEXPR_FUNCTIONS
+
 #if (defined(__cpp_constexpr) && (__cpp_constexpr >= 201304L))
 #ifndef __DIXELU_RELAXED_CONSTEXPR
 #define __DIXELU_RELAXED_CONSTEXPR constexpr
@@ -429,6 +431,9 @@ namespace dixelu
 		template<typename T>
 		__DIXELU_CONDITIONAL_CPP14_SPECIFIERS T constexpr_intpow(T a, std::ptrdiff_t b)
 		{
+#ifdef WITHOUT_CONSTEXPR_FUNCTIONS
+			return std::pow(a, b);
+#else
 			std::ptrdiff_t sign = 1;
 			bool inverse = false;
 			if (a < 0)
@@ -444,6 +449,7 @@ namespace dixelu
 
 			auto v = details::__uintpow(a, b);
 			return T(sign) * ((inverse) ? T(1) / v : v);
+#endif // WITHOUT_CONSTEXPR_FUNCTIONS
 		}
 	} // namespace utils
 }
