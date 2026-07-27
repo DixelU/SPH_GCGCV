@@ -49,33 +49,21 @@ namespace dixelu
 			for (std::size_t i = 0; i < dims; ++i)
 				base_array[i] = v;
 		}
-		__DIXELU_RELAXED_CONSTEXPR point(const std::initializer_list<general_inttype>& il_d) :
+		template<typename value_type>
+		__DIXELU_RELAXED_CONSTEXPR point(const std::initializer_list<value_type>& il_d) :
 			base_array()
 		{
 			auto y = il_d.begin();
 			for (std::size_t i = 0; i < dims && y != il_d.end(); ++i, ++y)
-				base_array[i] = *y;
+				base_array[i] = static_cast<general_float_type>(*y);
 		}
-		__DIXELU_RELAXED_CONSTEXPR point(const std::initializer_list<int>& il) :
-			base_array()
-		{
-			auto y = il.begin();
-			for (std::size_t i = 0; i < dims && y != il.end(); ++i, ++y)
-				base_array[i] = *y;
-		}
-		__DIXELU_RELAXED_CONSTEXPR point(const std::vector<general_inttype>& il_d) :
+		template<typename value_type>
+		__DIXELU_RELAXED_CONSTEXPR point(const std::vector<value_type>& il_d) :
 			base_array()
 		{
 			auto y = il_d.cbegin();
 			for (std::size_t i = 0; i < dims && y != il_d.end(); ++i, ++y)
-				base_array[i] = *y;
-		}
-		__DIXELU_RELAXED_CONSTEXPR point(const std::vector<int>& il) :
-			base_array()
-		{
-			auto y = il.cbegin();
-			for (std::size_t i = 0; i < dims && y != il.end(); ++i, ++y)
-				base_array[i] = *y;
+				base_array[i] = static_cast<general_float_type>(*y);
 		}
 		__DIXELU_RELAXED_CONSTEXPR point(const general_float_type(&starr)[dims]) :
 			base_array()

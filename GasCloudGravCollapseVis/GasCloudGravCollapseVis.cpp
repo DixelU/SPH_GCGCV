@@ -2759,7 +2759,8 @@ void mDisplay() {
 
 		constexpr current_float_t size = 100;
 		constexpr current_float_t size_fraction = 2.5;
-		constexpr int amount = 200;
+		constexpr current_float_t initial_rotation_fraction = 0.1f;
+		constexpr int amount = 20000;
 		vector<particle> vec;
 
 		for (int i = 0; i < amount; i++) {
@@ -2771,9 +2772,9 @@ void mDisplay() {
 
 			vec.push_back(particle(
 				temp*0.75,
-				(point{ -temp[1], temp[0] }) ,
+				initial_rotation_fraction * point{ -temp[1], temp[0] },
 				{0,0},
-				400000 / amount + RANDFLOAT(5), 1, 1, 1
+				40000000 / amount + RANDFLOAT(5), 1, 1, 1
 			));
 		}
 
@@ -2907,7 +2908,229 @@ void mExit(int a) {
 
 }
 
+struct HeadlessSimulationStats {
+	int particles = 0;
+	current_float_t max_speed = 0;
+	current_float_t max_acceleration = 0;
+	current_float_t max_mass = 0;
+	current_float_t rms_radius = 0;
+	point momentum = { 0.f, 0.f };
+	bool finite = true;
+};
+
+HeadlessSimulationStats CollectSimulationStats(quad_tree& tree) {
+	HeadlessSimulationStats result;
+	current_float_t total_mass = 0;
+	current_float_t weighted_radius_squared = 0;
+	point weighted_position = { 0.f, 0.f };
+	std::vector<node*> pending{ tree.root_node };
+	while (!pending.empty()) {
+		node* current_node = pending.back();
+		pending.pop_back();
+		if (current_node->particles_count_in_subtrees) {
+			for (node::positioning position = node::leftbottom; position < node::null; ((int&)position)++) {
+				if (node* child = current_node->get(position))
+					pending.push_back(child);
+			}
+			continue;
+		}
+		const particle& current_particle = current_node->mass_center;
+		if (current_particle.mass == 0)
+			continue;
+		result.particles++;
+		result.max_speed = (std::max)(result.max_speed, current_particle.velocity.get_norm());
+		result.max_acceleration = (std::max)(result.max_acceleration, current_particle.acceleration.get_norm());
+		result.max_mass = (std::max)(result.max_mass, current_particle.mass);
+		result.momentum += current_particle.mass * current_particle.velocity;
+		total_mass += current_particle.mass;
+		weighted_position += current_particle.mass * current_particle.position;
+		weighted_radius_squared += current_particle.mass * current_particle.position.get_norm2();
+		result.finite = result.finite &&
+			std::isfinite(current_particle.position[0]) && std::isfinite(current_particle.position[1]) &&
+			std::isfinite(current_particle.velocity[0]) && std::isfinite(current_particle.velocity[1]) &&
+			std::isfinite(current_particle.acceleration[0]) && std::isfinite(current_particle.acceleration[1]) &&
+			std::isfinite(current_particle.mass) && std::isfinite(current_particle.radius) &&
+			std::isfinite(current_particle.energy);
+	}
+	if (total_mass > 0) {
+		const point center_of_mass = weighted_position / total_mass;
+		result.rms_radius = sqrt((std::max)(
+			weighted_radius_squared / total_mass - center_of_mass.get_norm2(),
+			0.f));
+	}
+	return result;
+}
+
+int RunHeadlessSimulation(int requested_steps, unsigned int seed) {
+	constexpr current_float_t size = 100.f;
+	constexpr current_float_t size_fraction = 2.5f;
+	constexpr current_float_t initial_rotation_fraction = 0.1f;
+	constexpr int amount = 200;
+	srand(seed);
+	vector<particle> particles;
+	for (int i = 0; i < amount; i++) {
+		const auto sign = (rand() & 1 ? -1 : 1);
+		point candidate{
+			std::abs(RANDFLOAT(size / size_fraction)) * sign,
+			RANDFLOAT(size / size_fraction)
+		};
+		if (candidate.get_norm() > size / size_fraction)
+			continue;
+		particles.push_back(particle(
+			candidate * 0.75f,
+			initial_rotation_fraction * point{ -candidate[1], candidate[0] },
+			{ 0.f, 0.f },
+			400000.f / amount + RANDFLOAT(5),
+			1.f,
+			1.f,
+			1));
+	}
+
+	grav_eq_processor processor(particles, size);
+	vecnode traversal_nodes;
+	vecnode radial_nodes;
+	vecnode first_corad;
+	vecnode second_corad;
+	const HeadlessSimulationStats initial = CollectSimulationStats(processor.current);
+	const int report_interval = (std::max)(requested_steps / 10, 1);
+	printf(
+		"step=0 time=0 particles=%d rms_r=%.6g max_mass=%.6g max_v=%.6g max_a=%.6g "
+		"P=(%.9g,%.9g) finite=%d\n",
+		initial.particles,
+		initial.rms_radius,
+		initial.max_mass,
+		initial.max_speed,
+		initial.max_acceleration,
+		initial.momentum[0],
+		initial.momentum[1],
+		initial.finite ? 1 : 0);
+
+	for (int step = 0; step < requested_steps; step++) {
+		processor.local_time_step = (std::max)(
+			(std::min)(processor.current.root_node->mass_center.cfl_time, processor.time_step),
+			(current_float_t)1e-8f);
+		processor.iterate_subtree(
+			processor.current.root_node,
+			&traversal_nodes,
+			&radial_nodes,
+			&first_corad,
+			&second_corad);
+		processor.current.clear();
+		processor.current.swap(processor.buffer);
+		processor.total_time += processor.local_time_step;
+
+		if ((step + 1) % report_interval == 0 || step + 1 == requested_steps) {
+			const HeadlessSimulationStats stats = CollectSimulationStats(processor.current);
+			printf(
+				"step=%d time=%.6g particles=%d rms_r=%.6g max_mass=%.6g max_v=%.6g max_a=%.6g "
+				"P=(%.9g,%.9g) finite=%d\n",
+				step + 1,
+				processor.total_time,
+				stats.particles,
+				stats.rms_radius,
+				stats.max_mass,
+				stats.max_speed,
+				stats.max_acceleration,
+				stats.momentum[0],
+				stats.momentum[1],
+				stats.finite ? 1 : 0);
+			if (!stats.finite || stats.particles == 0 || stats.max_speed > 1e6f)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+int RunNumericalSelfTests() {
+	int failures = 0;
+	auto check = [&](bool condition, const char* name) {
+		printf("[%s] %s\n", condition ? "PASS" : "FAIL", name);
+		if (!condition)
+			failures++;
+	};
+	auto nearly_equal = [](current_float_t lhs, current_float_t rhs, current_float_t tolerance = 1e-5f) {
+		return std::abs(lhs - rhs) <= tolerance;
+	};
+
+	particle light_center({ -1.f, 0.f }, { 0.f, 0.f }, { 0.f, 0.f }, 2.f, 0.5f, 1.f);
+	particle heavy_center = light_center;
+	heavy_center.mass = 2000.f;
+	particle distant({ 1.f, 0.f }, { 0.f, 0.f }, { 0.f, 0.f }, 5.f, 0.5f, 1.f);
+	const point light_acceleration = grav_eq_processor::grav_force(light_center, distant);
+	const point heavy_acceleration = grav_eq_processor::grav_force(heavy_center, distant);
+	check(
+		(light_acceleration - heavy_acceleration).get_norm() < 1e-7f,
+		"gravity acceleration is independent of the accelerated particle's mass");
+
+	const point reverse_acceleration = grav_eq_processor::grav_force(distant, light_center);
+	const point momentum_derivative =
+		light_center.mass * light_acceleration + distant.mass * reverse_acceleration;
+	check(
+		momentum_derivative.get_norm() < 1e-6f,
+		"pairwise gravity conserves linear momentum");
+
+	particle coincident = distant;
+	coincident.position = light_center.position;
+	const point coincident_acceleration = grav_eq_processor::grav_force(light_center, coincident);
+	check(
+		std::isfinite(coincident_acceleration[0]) &&
+		std::isfinite(coincident_acceleration[1]) &&
+		coincident_acceleration.get_norm2() == 0,
+		"softened coincident gravity remains finite");
+
+	particle inertial_particle(
+		{ 1.f, 2.f }, { 3.f, -4.f }, { 0.f, 0.f }, 1.f, 1.f, 1.f);
+	grav_eq_processor inertial_processor({ inertial_particle }, 100.f);
+	vecnode radial_nodes;
+	vecnode first_corad;
+	vecnode second_corad;
+	particle inertial_result = inertial_processor.iterate_over_particle(
+		inertial_processor.current.root_node->mass_center,
+		&radial_nodes,
+		&first_corad,
+		&second_corad,
+		inertial_processor.heat_capacity,
+		inertial_processor.polytropic_coef,
+		0.01f);
+	check(
+		nearly_equal(inertial_result.position[0], 1.03f) &&
+		nearly_equal(inertial_result.position[1], 1.96f) &&
+		nearly_equal(inertial_result.velocity[0], 3.f) &&
+		nearly_equal(inertial_result.velocity[1], -4.f),
+		"integrator drifts an inertial particle exactly once per step");
+
+	particle first({ -2.f, 0.f }, { 0.f, 0.02f }, { 0.f, 0.f }, 2.f, 0.2f, 1.f);
+	particle second({ 2.f, 0.f }, { 0.f, -0.008f }, { 0.f, 0.f }, 5.f, 0.2f, 1.f);
+	const point initial_momentum = first.mass * first.velocity + second.mass * second.velocity;
+	bool finite_orbit = true;
+	for (int step = 0; step < 20000; step++) {
+		const point first_acceleration = grav_eq_processor::grav_force(first, second);
+		const point second_acceleration = grav_eq_processor::grav_force(second, first);
+		first.velocity += 0.001f * first_acceleration;
+		second.velocity += 0.001f * second_acceleration;
+		first.position += 0.001f * first.velocity;
+		second.position += 0.001f * second.velocity;
+		finite_orbit = finite_orbit &&
+			std::isfinite(first.position[0]) && std::isfinite(first.position[1]) &&
+			std::isfinite(second.position[0]) && std::isfinite(second.position[1]);
+	}
+	const point final_momentum = first.mass * first.velocity + second.mass * second.velocity;
+	check(
+		finite_orbit && (final_momentum - initial_momentum).get_norm() < 1e-5f,
+		"long two-body run remains finite and conserves momentum");
+
+	printf("%s: %d failure(s)\n", failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED", failures);
+	return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+	if (argc > 1 && std::string(argv[1]) == "--self-test")
+		return RunNumericalSelfTests();
+	if (argc > 1 && std::string(argv[1]) == "--headless") {
+		const int steps = argc > 2 ? (std::max)(std::atoi(argv[2]), 1) : 10000;
+		const unsigned int seed = argc > 3 ? (unsigned int)std::strtoul(argv[3], nullptr, 10) : 1u;
+		return RunHeadlessSimulation(steps, seed);
+	}
 
 	if (1)
 		ShowWindow(GetConsoleWindow(), SW_SHOW);

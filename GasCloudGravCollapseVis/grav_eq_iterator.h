@@ -11,6 +11,7 @@
 #include <cmath>
 #include <complex>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <queue>
@@ -350,50 +351,36 @@ struct quad_tree {
 		root_node->righttop_corner = { size * 0.5f, size * 0.5f };
 	}
 	~quad_tree() {
-		clear();
+		if (root_node) {
+			clear();
+			delete root_node;
+			root_node = nullptr;
+		}
 	}
 
 	inline void clear() {
-		locker.lock();
-		std::stack<node*> cur_nodes;
-
-		node* cur_node = root_node;
-		node* temp = nullptr;
-		node** ptemp;
-		for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
-			if (*(ptemp = root_node->get_dptr(i))) {
-				cur_nodes.push(*ptemp);
-				*ptemp = nullptr;
-			}
-		}
-		if (cur_nodes.size()) {
-			cur_node = cur_nodes.top();
-			cur_nodes.pop();
-		}
-		else
+		if (!root_node)
 			return;
-		while (true) {
-			if (cur_node) {
-				if (cur_node->particles_count_in_subtrees) {
-					for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
-						if (*(ptemp = cur_node->get_dptr(i))) {
-							cur_nodes.push(*ptemp);
-						}
-					}
-				}
+		std::lock_guard<std::recursive_mutex> guard(locker);
+		std::vector<node*> cur_nodes;
+		for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
+			node*& child = root_node->get(i);
+			if (child) {
+				cur_nodes.push_back(child);
+				child = nullptr;
 			}
-			if (cur_nodes.size()) {
-				//cur_node->zero_pointers();
-				delete cur_node;
-				cur_node = cur_nodes.top();
-				cur_nodes.pop();
+		}
+		while (!cur_nodes.empty()) {
+			node* cur_node = cur_nodes.back();
+			cur_nodes.pop_back();
+			for (positioning i = positioning::leftbottom; i < positioning::null; ((int&)i)++) {
+				if (node* child = cur_node->get(i))
+					cur_nodes.push_back(child);
 			}
-			else
-				break;
+			delete cur_node;
 		}
 		root_node->particles_count_in_subtrees = 0;
 		root_node->mass_center = particle();
-		locker.unlock();
 	}
 
 	inline void swap(quad_tree &tree) {
@@ -568,41 +555,43 @@ private:
 	void* thread_data;//memory leak is allowed actually
 	int await_in_milliseconds;
 	funcT exec_func;
-	bool is_active;
-	mutable state cur_state;
-	mutable state default_state;
+	std::atomic<bool> is_active;
+	std::atomic<state> cur_state;
+	std::atomic<state> default_state;
 	std::recursive_mutex execution_locker;
+	std::thread worker;
 	void start_thread() {
-		std::thread th([this]() {
-			while (is_active) {
+		worker = std::thread([this]() {
+			while (is_active.load(std::memory_order_acquire)) {
+				int sleep_time = 0;
 				execution_locker.lock();
-				if (cur_state == state::waiting) {
-					cur_state = state::running;
+				if (cur_state.load(std::memory_order_relaxed) == state::waiting) {
+					cur_state.store(state::running, std::memory_order_release);
 					exec_func(&thread_data);
 				}
-				cur_state = default_state;
+				cur_state.store(default_state.load(std::memory_order_relaxed), std::memory_order_release);
+				sleep_time = await_in_milliseconds;
 				execution_locker.unlock();
-				std::this_thread::sleep_for(std::chrono::milliseconds(await_in_milliseconds));
+				std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
 			}
 			});
-		th.detach();
 	}
 public:
-	pooled_thread(funcT function = [](void** ptr) {return; }, int awaiting_time = 5) :exec_func(function),  await_in_milliseconds(awaiting_time), default_state(state::idle) {
+	pooled_thread(funcT function = [](void** ptr) {return; }, int awaiting_time = 5) :
+		exec_func(function), await_in_milliseconds(awaiting_time), is_active(true),
+		cur_state(state::idle), default_state(state::idle) {
 		thread_data = nullptr;
-		is_active = true;
-		default_state = state::idle;
 		start_thread();
 	}
 	~pooled_thread() {
 		disable();
 	}
 	state get_state() const {
-		return cur_state;
+		return cur_state.load(std::memory_order_acquire);
 	}
 	void sign_awaiting() {
 		execution_locker.lock();
-		cur_state = state::waiting;
+		cur_state.store(state::waiting, std::memory_order_release);
 		execution_locker.unlock();
 	}
 	void set_new_awaiting_time(int milliseconds) {
@@ -612,7 +601,7 @@ public:
 	}
 	void set_new_default_state(state def_state = state::idle) {
 		execution_locker.lock();
-		default_state = def_state;
+		default_state.store(def_state, std::memory_order_release);
 		execution_locker.unlock();
 	}
 	void set_new_function(funcT func) {
@@ -621,9 +610,9 @@ public:
 		execution_locker.unlock();
 	}
 	void disable() {
-		execution_locker.lock();
-		is_active = false;
-		execution_locker.unlock();
+		is_active.store(false, std::memory_order_release);
+		if (worker.joinable())
+			worker.join();
 	}
 	void** __void_ptr_accsess() {
 		return &thread_data;
@@ -631,6 +620,15 @@ public:
 };
 
 struct grav_eq_processor {
+	struct worker_thread_info {
+		vecnode rad_nodes;
+		vecnode first_corad;
+		vecnode second_corad;
+		std::vector<node*> cur_nodes;
+		vecnode* root_ptrs = nullptr;
+		int id = 0;
+	};
+
 	mutable std::vector<vecnode> threads_desired_roots;
 	mutable std::vector<pair<node*, int>> _subdivision_cur_nodes;
 	mutable std::vector<std::pair<int, node*>> _subdivision_roots;
@@ -709,10 +707,14 @@ struct grav_eq_processor {
 
 	inline static point grav_force(const particle& center, const particle& distant_prt) {
 		constexpr current_float_t grav_const = 0.001f;//just because ...
-		auto t = grav_const * center.mass * distant_prt.mass * (distant_prt.position - center.position) /
-			std::pow(((distant_prt.radius + center.radius) * 0.5f + (center.position - distant_prt.position).get_norm2()), 1.5f);
-		//cout << t << endl;
-		return t;
+		const point displacement = distant_prt.position - center.position;
+		const current_float_t softening_length = (std::max)(
+			(distant_prt.radius + center.radius) * 0.5f,
+			grav_eq_utils::epsilon);
+		const current_float_t softened_distance_squared =
+			displacement.get_norm2() + softening_length * softening_length;
+		return grav_const * distant_prt.mass * displacement /
+			std::pow(softened_distance_squared, 1.5f);
 	}
 
 	inline static point barnes_hutt_force_in_subtree(node* cur_node, const particle& current, const current_float_t error_edge_squared)
@@ -780,7 +782,7 @@ struct grav_eq_processor {
 	{
 		constexpr current_float_t error_edge_squared = 0.05f;
 		constexpr current_float_t courant_number = 0.3f;
-		constexpr bool is_complete_SPH = false;
+		constexpr bool is_complete_SPH = true;
 		node* cur_node = current.root_node; 
 		int interactions_counter = 0;
 		corad_vector1->clear();
@@ -789,15 +791,18 @@ struct grav_eq_processor {
 		current_float_t cur_energy = 0;
 		current_float_t cur_pressure = 0;
 
-		radius_node_catcher(cur_node, current_prt.radius, rad_vector, &current_prt.position);
-
-		cur_density = get_density_at(cur_node, *corad_vector1, &current_prt);
-		cur_energy = get_energy_at(cur_node, *corad_vector1, *corad_vector2, &current_prt);
-		cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
+		if constexpr (is_complete_SPH) {
+			radius_node_catcher(cur_node, current_prt.radius, rad_vector, &current_prt.position);
+			cur_density = get_density_at(cur_node, *corad_vector1, &current_prt);
+			cur_energy = get_energy_at(cur_node, *corad_vector1, *corad_vector2, &current_prt);
+			cur_pressure = get_pressure(cur_density, cur_energy, polytropic_coef, heat_capacity);
+		}
 
 		point gravity = barnes_hutt_force_in_subtree(cur_node, current_prt, error_edge_squared);
 		
-		current_float_t c_i = sqrt(polytropic_coef * (std::max)(cur_pressure, grav_eq_utils::epsilon) / (std::max)(cur_density, grav_eq_utils::epsilon));
+		current_float_t c_i = 0;
+		if constexpr (is_complete_SPH)
+			c_i = sqrt(polytropic_coef * (std::max)(cur_pressure, grav_eq_utils::epsilon) / (std::max)(cur_density, grav_eq_utils::epsilon));
 
 		current_float_t dR = 0;
 		current_float_t dE = 0;
@@ -843,9 +848,15 @@ struct grav_eq_processor {
 			}
 		};
 
-		dR = current_prt.radius * (0.05f + 0.45f*(is_complete_SPH)) * (1.f + std::pow(particle::desired_amount_of_interactions / (current_prt.interactions_count + 1), 0.33333f));
-		dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1f);
-		dR -= current_prt.radius;
+		if (is_complete_SPH) {
+			dR = current_prt.radius * 0.5f *
+				(1.f + std::pow(
+					(current_float_t)particle::desired_amount_of_interactions /
+					(current_prt.interactions_count + 1),
+					0.33333f));
+			dR = (std::max)(dR, grav_eq_utils::epsilon * __size * 0.1f);
+			dR -= current_prt.radius;
+		}
 
 		//current_float_t max_Pi = 0;
 		for (auto& it_node : *rad_vector)
@@ -910,15 +921,28 @@ struct grav_eq_processor {
 
 		// std::cout << max_Pi << std::endl;
 
-		nabla_velocity = -nabla_velocity / cur_density;
+		if constexpr (is_complete_SPH)
+			nabla_velocity = -nabla_velocity / (std::max)(cur_density, grav_eq_utils::epsilon);
 		/*delta_time_CFL = (std::min)(sqrt(current_prt.radius / dV.get_norm()), 
 			(std::min)(courant_number * current_prt.radius / (current_prt.velocity.get_norm()),
 				abs(courant_number * current_prt.radius /
 			(current_prt.radius * std::abs(nabla_velocity) + cur_energy + 1.2f * (cur_energy + 0.5f * max_mu)))
 		));*/
 		
+		const point total_acceleration = -dV + gravity;
+		const current_float_t resolved_length = (std::max)(
+			current_prt.radius,
+			grav_eq_utils::epsilon * __size * 0.1f);
+		const current_float_t gravity_time_step = courant_number * sqrt(
+			resolved_length /
+			(std::max)(total_acceleration.get_norm(), grav_eq_utils::epsilon));
+		const current_float_t crossing_time_step =
+			courant_number * resolved_length /
+			(std::max)(current_prt.velocity.get_norm(), grav_eq_utils::epsilon);
+		delta_time_CFL = (std::min)(gravity_time_step, crossing_time_step);
+
 		if (is_complete_SPH)
-			delta_time_CFL = (std::min)(
+			delta_time_CFL = (std::min)(delta_time_CFL, (std::min)(
 				sqrt(current_prt.radius / (std::max)(dV.get_norm(), grav_eq_utils::epsilon)),
 				(std::min)(
 					courant_number * current_prt.radius / (std::max)(current_prt.velocity.get_norm(), grav_eq_utils::epsilon),
@@ -927,52 +951,34 @@ struct grav_eq_processor {
 						grav_eq_utils::epsilon
 					)
 				)
-			);
-		else 
-			delta_time_CFL = 10.f;
+			));
 
 		//dE *= (polytropic_coef - 1) / std::pow(std::abs(cur_density), polytropic_coef - 1) * (cur_density > 0 ? 1 : -1);
 
-		return { -dV + gravity, (dE), dR, interactions_counter, delta_time_CFL };
+		return { total_acceleration, dE, dR, interactions_counter, delta_time_CFL };
 	}
 
 	inline particle iterate_over_particle(particle& current_prt, vecnode* rad_vector, vecnode* corad_vector1, vecnode* corad_vector2,
-		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step) {// kind-of velvet integration
-		
+		const current_float_t heat_capacity, const current_float_t polytropic_coef, const current_float_t time_step) {
 		particle local_prt = current_prt;
-		current_float_t time_elapsed = 0;
-		current_float_t local_time_step = time_step;
-#ifdef is_variable_timestep
-		current_float_t cfl_time = local_prt.cfl_time;
-#endif
-		auto ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, heat_capacity, polytropic_coef, local_time_step);
-		local_prt.energy += local_time_step * ans.dE;
+		const auto ans = iterate_particle(
+			local_prt, rad_vector, corad_vector1, corad_vector2,
+			heat_capacity, polytropic_coef, time_step);
+
+		local_prt.energy += time_step * ans.dE;
 		local_prt.interactions_count = ans.interactions_count;
-		local_prt.radius += 0.5f * ans.dR;
+		local_prt.radius = (std::max)(
+			local_prt.radius + ans.dR,
+			grav_eq_utils::epsilon * __size * 0.1f);
+		local_prt.acceleration = ans.dV;
 
-		point initial_vel = local_prt.velocity;
-		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
-			((current_float_t)2.f / 3) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration
-		));
-		local_prt.velocity += local_time_step * ((current_float_t)1.5f * ans.dV - (current_float_t)0.5f * local_prt.acceleration);
-
-		auto n_ans = iterate_particle(local_prt, rad_vector, corad_vector1, corad_vector2, polytropic_coef, heat_capacity, local_time_step);
-		//local_prt.energy += 0.25f * time_step * n_ans.dE;
-		local_prt.interactions_count = n_ans.interactions_count;
-		
-		local_prt.radius = (std::max)(local_prt.radius + 0.5f * n_ans.dR, grav_eq_utils::epsilon * __size * 0.1f);
-		local_prt.energy += 0.5f * local_time_step * (ans.dE + n_ans.dE);
-
-		local_prt.acceleration = (ans.dV + n_ans.dV) * 0.5f;
-		local_prt.velocity = initial_vel + local_time_step * (((current_float_t)1.f / 3) * n_ans.dV + ((current_float_t)5.f / 6) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration);
-		time_elapsed += local_time_step;
-
-		local_prt.position += local_time_step * (local_prt.velocity + local_time_step * (
-			((current_float_t)2.f / 3) * ans.dV - ((current_float_t)1.f / 6) * local_prt.acceleration
-		));
+		// Symplectic Euler: all particles are accelerated from the same tree state,
+		// then drift exactly once. This is first order but bounded for orbital motion.
+		local_prt.velocity += time_step * local_prt.acceleration;
+		local_prt.position += time_step * local_prt.velocity;
 
 #ifdef is_variable_timestep
-		local_prt.cfl_time = (std::min)(ans.dT_CFL, n_ans.dT_CFL);
+		local_prt.cfl_time = ans.dT_CFL;
 #endif
 		return local_prt;
 	}
@@ -993,7 +999,17 @@ struct grav_eq_processor {
 				else { 
 					auto prt = iterate_over_particle(cur_node->mass_center, rad_nodes, first_corad, second_corad, heat_capacity, polytropic_coef, local_time_step);
 					cur_node->mass_center.visited = flickering;
-					if (prt.velocity[0] == prt.velocity[0] && prt.acceleration[0] == prt.acceleration[0]) {
+					const bool finite_particle =
+						std::isfinite(prt.position[0]) && std::isfinite(prt.position[1]) &&
+						std::isfinite(prt.velocity[0]) && std::isfinite(prt.velocity[1]) &&
+						std::isfinite(prt.acceleration[0]) && std::isfinite(prt.acceleration[1]) &&
+						std::isfinite(prt.mass) && std::isfinite(prt.radius) &&
+						std::isfinite(prt.energy)
+#ifdef is_variable_timestep
+						&& std::isfinite(prt.cfl_time)
+#endif
+						;
+					if (finite_particle) {
 						if (!grav_eq_utils::point_in_square(buffer.root_node->leftbottom_corner, buffer.root_node->righttop_corner, prt.position))
 						{
 							float x_min = buffer.root_node->leftbottom_corner[0];
@@ -1003,20 +1019,14 @@ struct grav_eq_processor {
 							float x_range = x_max - x_min;
 							float y_range = y_max - y_min;
 
-							// Wraparound for X coordinate
-							if (prt.position[0] < x_min)
-								prt.position[0] += x_range;
-							else if (prt.position[0] > x_max)
-								prt.position[0] -= x_range;
-
-							// Wraparound for Y coordinate
-							if (prt.position[1] < y_min)
-								prt.position[1] += y_range;
-							else if (prt.position[1] > y_max)
-								prt.position[1] -= y_range;
-
-							prt.velocity *= 0.5f; // damping
-							prt.acceleration *= -1.f;
+							auto periodic_wrap = [](current_float_t value, current_float_t min_value, current_float_t range) {
+								current_float_t wrapped = std::fmod(value - min_value, range);
+								if (wrapped < 0)
+									wrapped += range;
+								return min_value + wrapped;
+							};
+							prt.position[0] = periodic_wrap(prt.position[0], x_min, x_range);
+							prt.position[1] = periodic_wrap(prt.position[1], y_min, y_range);
 						}
 
 						buffer_mutex.lock();
@@ -1024,7 +1034,7 @@ struct grav_eq_processor {
 						buffer_mutex.unlock();
 					}
 					else
-						printf("nan detected\n");
+						printf("non-finite particle state rejected\n");
 				}
 			}
 			if (cur_node && cur_nodes->size()) {
@@ -1116,29 +1126,23 @@ struct grav_eq_processor {
 		for (int i = 0; i < num_of_threads; i++){
 			threads.push_back(new pooled_thread()); // executors
 			auto t = threads.back()->__void_ptr_accsess();
-			*t = (void*)i;
+			auto* info = new worker_thread_info;
+			info->root_ptrs = &threads_desired_roots[i];
+			info->id = i;
+			*t = info;
 			threads.back()->set_new_function([this](void** void_ptr) {
-
-				typedef struct {
-					vecnode rad_nodes, first_corad, second_corad;
-					std::vector <node*> cur_nodes;
-					vecnode* root_ptrs;
-					int id;
-				} thread_info;
-				thread_info** pptr = (thread_info**)void_ptr;
-
-				if (*pptr < (thread_info*)0x400) {
-					int id = (int)*pptr;
-					*pptr = new thread_info;
-					(*pptr)->root_ptrs = &(threads_desired_roots[id]);
-					(*pptr)->id = id;
-				}
+				auto* info = static_cast<worker_thread_info*>(*void_ptr);
 
 				pause.lock();
 				pause.unlock();
 
-				for (auto& local_root : *(*pptr)->root_ptrs)
-					iterate_subtree(local_root, &(*pptr)->cur_nodes, &(*pptr)->rad_nodes, &(*pptr)->first_corad, &(*pptr)->second_corad);
+				for (auto& local_root : *info->root_ptrs)
+					iterate_subtree(
+						local_root,
+						&info->cur_nodes,
+						&info->rad_nodes,
+						&info->first_corad,
+						&info->second_corad);
 
 				//printf("thread finished\n");
 
