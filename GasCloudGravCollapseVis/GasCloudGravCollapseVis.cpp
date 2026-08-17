@@ -3471,6 +3471,85 @@ int RunHeadlessSimulation(int requested_steps, unsigned int seed)
 	return 0;
 }
 
+int RunPreparationBenchmark(
+	int requested_particles,
+	int requested_steps,
+	current_float_t radius_in_spacings)
+{
+	const int side = static_cast<int>(std::ceil(std::sqrt(
+		static_cast<double>((std::max)(requested_particles, 1)))));
+	const current_float_t spacing = 1.f;
+	const current_float_t size = static_cast<current_float_t>(side + 4);
+	vector<particle> particles;
+	particles.reserve(requested_particles);
+	for (int y = 0; y < side && particles.size() < requested_particles; y++)
+		for (int x = 0; x < side && particles.size() < requested_particles; x++)
+			particles.emplace_back(
+				point{
+					(x - (side - 1) * 0.5f) * spacing,
+					(y - (side - 1) * 0.5f) * spacing},
+				point{0.f, 0.f},
+				point{0.f, 0.f},
+				1.f,
+				radius_in_spacings * spacing,
+				1.f);
+
+	grav_eq_processor processor(particles, size);
+	grav_eq_iteration_buffers iteration_buffers;
+	const bool preparation_only = requested_steps <= 0;
+	const int steps = (std::max)(requested_steps, 1);
+	double preparation_ms = 0.;
+	double iteration_ms = 0.;
+	double neighbor_graph_ms = 0.;
+	double task_split_ms = 0.;
+	for (int step = 0; step < steps; step++)
+	{
+		const auto preparation_begin = std::chrono::steady_clock::now();
+		processor.spatial_neighbors.build_neighbor_graph(
+			processor.current.root_node);
+		const auto graph_end = std::chrono::steady_clock::now();
+		processor.build_subdivision_tasks();
+		const auto preparation_end = std::chrono::steady_clock::now();
+		if (!preparation_only)
+		{
+			processor.local_time_step = processor.time_step;
+			processor.iterate_subtree(
+				processor.current.root_node,
+				iteration_buffers);
+		}
+		const auto iteration_end = std::chrono::steady_clock::now();
+
+		neighbor_graph_ms += std::chrono::duration<double, std::milli>(
+			graph_end - preparation_begin).count();
+		task_split_ms += std::chrono::duration<double, std::milli>(
+			preparation_end - graph_end).count();
+		preparation_ms += std::chrono::duration<double, std::milli>(
+			preparation_end - preparation_begin).count();
+		iteration_ms += std::chrono::duration<double, std::milli>(
+			iteration_end - preparation_end).count();
+
+		if (!preparation_only)
+		{
+			processor.current.clear();
+			processor.current.swap(processor.buffer);
+		}
+	}
+
+	printf(
+		"particles=%zu steps=%d radius=%.3f preparation_ms=%.3f neighbor_graph_ms=%.3f "
+		"task_split_ms=%.3f serial_iteration_ms=%.3f tasks=%zu neighbors=%zu\n",
+		particles.size(),
+		preparation_only ? 0 : steps,
+		radius_in_spacings,
+		preparation_ms / steps,
+		neighbor_graph_ms / steps,
+		task_split_ms / steps,
+		iteration_ms / steps,
+		processor._subdivision_roots.size(),
+		processor.spatial_neighbors.neighbors.size());
+	return 0;
+}
+
 int RunNumericalSelfTests()
 {
 	int failures = 0;
@@ -3748,6 +3827,15 @@ int main(int argc, char** argv)
 		const int steps = argc > 2 ? (std::max)(std::atoi(argv[2]), 1) : 10000;
 		const unsigned int seed = argc > 3 ? (unsigned int)std::strtoul(argv[3], nullptr, 10) : 1u;
 		return RunHeadlessSimulation(steps, seed);
+	}
+	if (argc > 1 && std::string(argv[1]) == "--benchmark-preparation")
+	{
+		const int particles = argc > 2 ? (std::max)(std::atoi(argv[2]), 1) : 10000;
+		const int steps = argc > 3 ? std::atoi(argv[3]) : 5;
+		const current_float_t radius = argc > 4 ?
+			(std::max)(static_cast<current_float_t>(std::atof(argv[4])), 0.01f) :
+			2.5f;
+		return RunPreparationBenchmark(particles, steps, radius);
 	}
 
 	if (1)

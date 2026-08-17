@@ -377,11 +377,13 @@ struct sph_neighbor_grid
 	vecnode tree_traversal;
 	std::vector<uint8_t> particle_levels;
 	std::vector<grid_entry> entries;
+	std::vector<grid_entry> entry_scratch;
 	std::vector<cell_range> cells;
 	std::vector<uint32_t> hash_slots;
-	std::vector<std::pair<uint32_t, uint32_t>> interacting_pairs;
+	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> pair_partitions;
 	std::vector<uint32_t> neighbor_offsets;
 	std::vector<uint32_t> neighbors;
+	std::vector<current_float_t> neighbor_weights;
 	std::vector<current_float_t> cached_densities;
 	std::vector<current_float_t> cached_energies;
 	std::vector<uint32_t> degrees;
@@ -400,6 +402,46 @@ struct sph_neighbor_grid
 		value *= UINT64_C(0xc4ceb9fe1a85ec53);
 		value ^= value >> 33;
 		return value;
+	}
+
+	inline static size_t preparation_worker_count(size_t particle_count)
+	{
+		constexpr size_t minimum_particles_per_worker = 2048;
+		const size_t useful_workers =
+			(particle_count + minimum_particles_per_worker - 1) /
+			minimum_particles_per_worker;
+		return (std::max)(size_t{1}, (std::min)(
+			useful_workers,
+			static_cast<size_t>((std::max)(
+				std::thread::hardware_concurrency(),
+				1u))));
+	}
+
+	template <class function_t>
+	inline static void parallel_for_blocks(
+		size_t item_count,
+		size_t worker_count,
+		function_t&& function)
+	{
+		if (worker_count <= 1)
+		{
+			function(size_t{0}, item_count, size_t{0});
+			return;
+		}
+
+		std::vector<std::jthread> workers;
+		workers.reserve(worker_count - 1);
+		for (size_t worker = 1; worker < worker_count; worker++)
+		{
+			workers.emplace_back([&, worker]()
+			{
+				function(
+					item_count * worker / worker_count,
+					item_count * (worker + 1) / worker_count,
+					worker);
+			});
+		}
+		function(size_t{0}, item_count / worker_count, size_t{0});
 	}
 
 	inline static uint64_t make_key(
@@ -487,40 +529,54 @@ struct sph_neighbor_grid
 
 	inline void build_cell_table()
 	{
-		std::sort(
-			entries.begin(),
-			entries.end(),
-			[](const grid_entry& lhs, const grid_entry& rhs)
-			{
-				if (lhs.key != rhs.key)
-					return lhs.key < rhs.key;
-				return lhs.particle_index < rhs.particle_index;
-			});
-
+		// Build and compact the hash table in linear time. Entries retain their
+		// particle-index order within each cell, as they did after the old sort.
 		cells.clear();
-		for (uint32_t begin = 0; begin < entries.size();)
-		{
-			uint32_t end = begin + 1;
-			while (end < entries.size() &&
-				entries[end].key == entries[begin].key)
-				end++;
-			cells.push_back({entries[begin].key, begin, end});
-			begin = end;
-		}
-
 		size_t slot_count = 8;
-		while (slot_count < cells.size() * 2)
+		while (slot_count < entries.size() * 2)
 			slot_count *= 2;
 		hash_slots.assign(slot_count, invalid_index);
 		const size_t mask = slot_count - 1;
-		for (uint32_t cell_index = 0; cell_index < cells.size(); cell_index++)
+		degrees.resize(entries.size());
+		cells.reserve(entries.size());
+		for (uint32_t entry_index = 0;
+			entry_index < entries.size();
+			entry_index++)
 		{
 			size_t slot =
-				static_cast<size_t>(mix_key(cells[cell_index].key)) & mask;
-			while (hash_slots[slot] != invalid_index)
+				static_cast<size_t>(mix_key(entries[entry_index].key)) & mask;
+			while (hash_slots[slot] != invalid_index &&
+				cells[hash_slots[slot]].key != entries[entry_index].key)
 				slot = (slot + 1) & mask;
-			hash_slots[slot] = cell_index;
+			if (hash_slots[slot] == invalid_index)
+			{
+				hash_slots[slot] = static_cast<uint32_t>(cells.size());
+				cells.push_back({entries[entry_index].key, 0, 0});
+			}
+			const uint32_t cell_index = hash_slots[slot];
+			degrees[entry_index] = cell_index;
+			cells[cell_index].end++;
 		}
+
+		uint32_t next_begin = 0;
+		for (cell_range& cell : cells)
+		{
+			const uint32_t count = cell.end;
+			cell.begin = next_begin;
+			cell.end = next_begin + count;
+			next_begin = cell.end;
+		}
+		cursors.resize(cells.size());
+		for (uint32_t cell_index = 0;
+			cell_index < cells.size();
+			cell_index++)
+			cursors[cell_index] = cells[cell_index].begin;
+		entry_scratch.resize(entries.size());
+		for (uint32_t entry_index = 0;
+			entry_index < entries.size();
+			entry_index++)
+			entry_scratch[cursors[degrees[entry_index]]++] = entries[entry_index];
+		entries.swap(entry_scratch);
 	}
 
 	inline void build_neighbor_graph(node* root)
@@ -529,9 +585,11 @@ struct sph_neighbor_grid
 		const size_t particle_count = particle_nodes.size();
 		particle_levels.resize(particle_count);
 		entries.resize(particle_count);
-		interacting_pairs.clear();
+		for (auto& partition : pair_partitions)
+			partition.clear();
 		neighbor_offsets.assign(particle_count + 1, 0);
 		neighbors.clear();
+		neighbor_weights.clear();
 		cached_densities.clear();
 		cached_energies.clear();
 		if (!particle_count)
@@ -596,142 +654,175 @@ struct sph_neighbor_grid
 		}
 		build_cell_table();
 
-		interacting_pairs.reserve(
-			particle_count * particle::desired_amount_of_interactions);
-		for (uint32_t first_index = 0;
-			first_index < particle_count;
-			first_index++)
-		{
-			const particle& first = particle_nodes[first_index]->mass_center;
-			const uint8_t first_level = particle_levels[first_index];
-			for (uint8_t level = first_level;
-				level <= largest_occupied_level;
-				level++)
+		const size_t worker_count = preparation_worker_count(particle_count);
+		pair_partitions.resize(worker_count);
+		parallel_for_blocks(
+			particle_count,
+			worker_count,
+			[&](size_t begin, size_t end, size_t worker)
 			{
-				const current_float_t cell_size = cell_size_at(level);
-				const uint32_t cell_count = cell_count_at(level);
-				const uint32_t center_x = coordinate_at(
-					first.position[0],
-					domain_leftbottom[0],
-					cell_size,
-					cell_count);
-				const uint32_t center_y = coordinate_at(
-					first.position[1],
-					domain_leftbottom[1],
-					cell_size,
-					cell_count);
-
-				for (int y_offset = -1; y_offset <= 1; y_offset++)
-					for (int x_offset = -1; x_offset <= 1; x_offset++)
+				auto& pairs = pair_partitions[worker];
+				pairs.clear();
+				const size_t expected_pairs =
+					(end - begin) * particle::desired_amount_of_interactions;
+				if (pairs.capacity() < expected_pairs)
+					pairs.reserve(expected_pairs);
+				for (uint32_t first_index = static_cast<uint32_t>(begin);
+					first_index < end;
+					first_index++)
+				{
+					const particle& first =
+						particle_nodes[first_index]->mass_center;
+					const uint8_t first_level = particle_levels[first_index];
+					for (uint8_t level = first_level;
+						level <= largest_occupied_level;
+						level++)
 					{
-						const int64_t x =
-							static_cast<int64_t>(center_x) + x_offset;
-						const int64_t y =
-							static_cast<int64_t>(center_y) + y_offset;
-						if (x < 0 || y < 0 ||
-							x >= cell_count || y >= cell_count)
-							continue;
-						const cell_range* cell = find_cell(make_key(
-							level,
-							static_cast<uint32_t>(x),
-							static_cast<uint32_t>(y)));
-						if (!cell)
-							continue;
+						const current_float_t cell_size = cell_size_at(level);
+						const uint32_t cell_count = cell_count_at(level);
+						const uint32_t center_x = coordinate_at(
+							first.position[0],
+							domain_leftbottom[0],
+							cell_size,
+							cell_count);
+						const uint32_t center_y = coordinate_at(
+							first.position[1],
+							domain_leftbottom[1],
+							cell_size,
+							cell_count);
 
-						for (uint32_t entry_index = cell->begin;
-							entry_index < cell->end;
-							entry_index++)
-						{
-							const uint32_t second_index =
-								entries[entry_index].particle_index;
-							if (level == first_level &&
-								second_index <= first_index)
-								continue;
-							const particle& second =
-								particle_nodes[second_index]->mass_center;
-							const current_float_t support_radius =
-								(std::max)(first.radius, second.radius);
-							if ((first.position - second.position).get_norm2() <=
-								support_radius * support_radius)
-								interacting_pairs.push_back({
-									first_index,
-									second_index});
-						}
+						for (int y_offset = -1; y_offset <= 1; y_offset++)
+							for (int x_offset = -1; x_offset <= 1; x_offset++)
+							{
+								const int64_t x =
+									static_cast<int64_t>(center_x) + x_offset;
+								const int64_t y =
+									static_cast<int64_t>(center_y) + y_offset;
+								if (x < 0 || y < 0 ||
+									x >= cell_count || y >= cell_count)
+									continue;
+								const cell_range* cell = find_cell(make_key(
+									level,
+									static_cast<uint32_t>(x),
+									static_cast<uint32_t>(y)));
+								if (!cell)
+									continue;
+
+								for (uint32_t entry_index = cell->begin;
+									entry_index < cell->end;
+									entry_index++)
+								{
+									const uint32_t second_index =
+										entries[entry_index].particle_index;
+									if (level == first_level &&
+										second_index <= first_index)
+										continue;
+									const particle& second =
+										particle_nodes[second_index]->mass_center;
+									const current_float_t support_radius =
+										(std::max)(first.radius, second.radius);
+									if ((first.position - second.position).get_norm2() <=
+										support_radius * support_radius)
+										pairs.push_back({first_index, second_index});
+								}
+							}
 					}
-			}
-		}
+				}
+			});
 
 		degrees.assign(particle_count, 1);
-		for (const auto& [first, second] : interacting_pairs)
-		{
-			degrees[first]++;
-			degrees[second]++;
-		}
+		for (const auto& partition : pair_partitions)
+			for (const auto& [first, second] : partition)
+			{
+				degrees[first]++;
+				degrees[second]++;
+			}
 		for (size_t index = 0; index < particle_count; index++)
 			neighbor_offsets[index + 1] =
 				neighbor_offsets[index] + degrees[index];
 		neighbors.resize(neighbor_offsets.back());
+		neighbor_weights.resize(neighbor_offsets.back());
 		cursors.assign(neighbor_offsets.begin(), neighbor_offsets.end() - 1);
 		for (uint32_t index = 0; index < particle_count; index++)
-			neighbors[cursors[index]++] = index;
-		for (const auto& [first, second] : interacting_pairs)
 		{
-			neighbors[cursors[first]++] = second;
-			neighbors[cursors[second]++] = first;
+			const uint32_t offset = cursors[index]++;
+			neighbors[offset] = index;
+			const particle& source = particle_nodes[index]->mass_center;
+			neighbor_weights[offset] = grav_eq_utils::pressure_core(
+				point{0.f, 0.f},
+				source.radius);
 		}
+		for (const auto& partition : pair_partitions)
+			for (const auto& [first, second] : partition)
+			{
+				const particle& first_particle =
+					particle_nodes[first]->mass_center;
+				const particle& second_particle =
+					particle_nodes[second]->mass_center;
+				const current_float_t support_radius = (std::max)(
+					first_particle.radius,
+					second_particle.radius);
+				const current_float_t weight = grav_eq_utils::pressure_core(
+					first_particle.position - second_particle.position,
+					support_radius);
+				// The kernel is symmetric, so calculate it once for both directions
+				// and reuse it for the density and energy passes below.
+				const uint32_t first_offset = cursors[first]++;
+				const uint32_t second_offset = cursors[second]++;
+				neighbors[first_offset] = second;
+				neighbors[second_offset] = first;
+				neighbor_weights[first_offset] = weight;
+				neighbor_weights[second_offset] = weight;
+			}
 
 		cached_densities.assign(particle_count, 0.f);
-		for (uint32_t source_index = 0;
-			source_index < particle_count;
-			source_index++)
-		{
-			const particle& source =
-				particle_nodes[source_index]->mass_center;
-			current_float_t density = 0.f;
-			for (uint32_t offset = neighbor_offsets[source_index];
-				offset < neighbor_offsets[source_index + 1];
-				offset++)
+		parallel_for_blocks(
+			particle_count,
+			worker_count,
+			[&](size_t begin, size_t end, size_t)
 			{
-				const particle& neighbor =
-					particle_nodes[neighbors[offset]]->mass_center;
-				const point difference =
-					source.position - neighbor.position;
-				const current_float_t support_radius =
-					(std::max)(source.radius, neighbor.radius);
-				density += neighbor.mass * grav_eq_utils::pressure_core(
-					difference,
-					support_radius);
-			}
-			cached_densities[source_index] = density;
-		}
+				for (uint32_t source_index = static_cast<uint32_t>(begin);
+					source_index < end;
+					source_index++)
+				{
+					current_float_t density = 0.f;
+					for (uint32_t offset = neighbor_offsets[source_index];
+						offset < neighbor_offsets[source_index + 1];
+						offset++)
+					{
+						const particle& neighbor =
+							particle_nodes[neighbors[offset]]->mass_center;
+						density += neighbor.mass * neighbor_weights[offset];
+					}
+					cached_densities[source_index] = density;
+				}
+			});
 
 		cached_energies.assign(particle_count, 0.f);
-		for (uint32_t source_index = 0;
-			source_index < particle_count;
-			source_index++)
-		{
-			const particle& source =
-				particle_nodes[source_index]->mass_center;
-			current_float_t energy = 0.f;
-			for (uint32_t offset = neighbor_offsets[source_index];
-				offset < neighbor_offsets[source_index + 1];
-				offset++)
+		parallel_for_blocks(
+			particle_count,
+			worker_count,
+			[&](size_t begin, size_t end, size_t)
 			{
-				const uint32_t neighbor_index = neighbors[offset];
-				const particle& neighbor =
-					particle_nodes[neighbor_index]->mass_center;
-				const point difference =
-					source.position - neighbor.position;
-				const current_float_t support_radius =
-					(std::max)(source.radius, neighbor.radius);
-				energy +=
-					(neighbor.mass / cached_densities[neighbor_index]) *
-					neighbor.energy * grav_eq_utils::pressure_core(
-						difference,
-						support_radius);
-			}
-			cached_energies[source_index] = energy;
-		}
+				for (uint32_t source_index = static_cast<uint32_t>(begin);
+					source_index < end;
+					source_index++)
+				{
+					current_float_t energy = 0.f;
+					for (uint32_t offset = neighbor_offsets[source_index];
+						offset < neighbor_offsets[source_index + 1];
+						offset++)
+					{
+						const uint32_t neighbor_index = neighbors[offset];
+						const particle& neighbor =
+							particle_nodes[neighbor_index]->mass_center;
+						energy +=
+							(neighbor.mass / cached_densities[neighbor_index]) *
+							neighbor.energy * neighbor_weights[offset];
+					}
+					cached_energies[source_index] = energy;
+				}
+			});
 	}
 
 	inline void collect_neighbors(node* source, vecnode& results) const
