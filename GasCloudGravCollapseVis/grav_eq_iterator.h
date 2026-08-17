@@ -3,7 +3,7 @@
 #include "consts.h"
 #include "buffered_queue_spsc.h"
 #include "field_vis.h"
-#include "sq_matrix.h"
+#include <sq_matrix.h>
 #include "weird_hacks.h"
 
 #include <algorithm>
@@ -330,7 +330,7 @@ struct node
 	}
 	inline bool point_is_inside(const point& pos)
 	{
-		return (pos >= leftbottom_corner && pos <= righttop_corner);
+		return (leftbottom_corner <= pos && pos <= righttop_corner);
 	}
 	inline void zero_pointers()
 	{
