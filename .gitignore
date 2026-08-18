@@ -351,3 +351,6 @@ performance/symcache/
 
 # Backup folder for Package Reference Convert tool in Visual Studio 2017
 MigrationBackup/
+
+# Dear ImGui per-user window layout
+imgui.ini

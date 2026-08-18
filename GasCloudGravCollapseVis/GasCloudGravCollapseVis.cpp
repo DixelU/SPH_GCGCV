@@ -1,4065 +1,497 @@
 #include "pch.h"
-#include <ctime>
-#include <iostream>
-#include <cstdlib>
-#include <cmath>
-#include <vector>
-#include <filesystem>
-#include <deque>
-#include <unordered_set>
-#include <unordered_map>
-#include <list>
-#include <limits>
-#include <fstream>
-#include <set>
-#include <string>
+
+#include <GLFW/glfw3.h>
+
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+
+#include "renderer.h"
+#include "simulation.h"
+
 #include <algorithm>
-#include <iterator>
-#include <map>
-#include <deque>
-#include <thread>
-#include <mutex>
-#include <Windows.h>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <memory>
+#include <string>
+#include <vector>
 
-//#define WIN32_LEAN_AND_MEAN
-
-#include <GL/freeglut.h>
-
-#include "consts.h"
-#include "field_vis.h"
-
-#define NULL nullptr
-
-using namespace std;
-
-typedef unsigned char BYTE;
-typedef bool BIT;
-
-#define BEG_RANGE 200
-FLOAT RANGE = BEG_RANGE, MXPOS = 0.f, MYPOS = 0.f;
-
-const char* WINDOWTITLE = "____\0";
-wstring RegPath = L"Software\\SAF_APP_UNNAMED\\";
-string FONTNAME = "Arial";
-BIT is_fonted = 0;
-
-//#define ROT_ANGLE 0.7
-#define TRY_CATCH(code,msg) try{code}catch(...){cout<<msg<<endl;}
-
-float ROT_ANGLE = 0.f, centx = 0., centy = 0.;
-#define ROT_RAD ANGTORAD(ROT_ANGLE)
-//#define RANGE 200
-#define WINDXSIZE 720
-#define WINDYSIZE 720
-
-constexpr float ANGTORAD(float a) { return 0.0174532925f * a; }
-inline float RANDFLOAT(float range)
+namespace
 {
-	return (0 - range) + ((float)rand() / ((float)RAND_MAX / (2 * range)));
+
+[[nodiscard]] bool nearly_equal(float lhs, float rhs, float tolerance = 1e-5f)
+{
+	return std::abs(lhs - rhs) <= tolerance;
 }
 
-inline int RANDSGN()
-{
-	return (rand() & 1) ? -1 : 1;
-}
-constexpr float SLOWDPROG(float a, float b, float progressrate) { return (a + (progressrate - 1) * b) / progressrate; }
-inline void GLCOLOR(unsigned int uINT) { glColor4ub(((uINT & 0xFF000000) >> 24), ((uINT & 0xFF0000) >> 16), ((uINT & 0xFF00) >> 8), (uINT & 0xFF)); }
-
-float WindX = WINDXSIZE, WindY = WINDYSIZE;
-
-BIT ANIMATION_IS_ACTIVE = 0, FIRSTBOOT = 1, DRAG_OVER = 0,
-APRIL_FOOL = 0;
-DWORD TimerV = 0;
-HWND hWnd;
-HDC hDc;
-auto HandCursor = ::LoadCursor(NULL, IDC_HAND), AllDirectCursor = ::LoadCursor(NULL, IDC_CROSS);
-//const float singlepixwidth = (float)RANGE / WINDXSIZE;
-
-void absoluteToActualCoords(int ix, int iy, float& x, float& y);
-float CONSTZERO(float x, float y) { return 0.f; }
-int TIMESEED()
-{
-	SYSTEMTIME t;
-	GetLocalTime(&t);
-	if (t.wMonth == 4 && t.wDay == 1)APRIL_FOOL = 1;
-	return t.wMilliseconds + (t.wSecond * 1000) + t.wMinute * 60000;
-}
-
-unordered_map<char, string> ASCII;
-void InitASCIIMap()
-{
-	ASCII.clear();
-	ifstream file("ascii.dotmap", ios::in);
-	string T;
-	if (true)
-	{
-		for (int i = 0; i <= 32; i++)ASCII[i] = " ";
-		ASCII['!'] = "85 2";
-		ASCII['"'] = "74 96";
-		ASCII['#'] = "81 92 64";
-		ASCII['$'] = "974631 82";
-		ASCII['%'] = "7487 3623 91";
-		ASCII['&'] = "37954126";
-		ASCII['\''] = "85";
-		ASCII['('] = "842";
-		ASCII[')'] = "862";
-		ASCII['*'] = "67 58 94~";
-		ASCII['+'] = "46 82";
-		ASCII[','] = "15~";
-		ASCII['-'] = "46";
-		ASCII['.'] = "2";
-		ASCII['/'] = "81";
-		ASCII['0'] = "97139";
-		ASCII['1'] = "482 13";
-		ASCII['2'] = "796413";
-		ASCII['3'] = "7965 631";
-		ASCII['4'] = "746 93";
-		ASCII['5'] = "974631";
-		ASCII['6'] = "9741364";
-		ASCII['7'] = "7952";
-		ASCII['8'] = "17931 46";
-		ASCII['9'] = "1369746";
-		ASCII[':'] = "8 5~";
-		ASCII[';'] = "8 15~";
-		ASCII['<'] = "943";
-		ASCII['='] = "46 79~";
-		ASCII['>'] = "761";
-		ASCII['?'] = "795 2";
-		ASCII['@'] = "317962486";
-		ASCII['A'] = "1793 46";
-		ASCII['B'] = "17954 531";
-		ASCII['C'] = "9713";
-		ASCII['D'] = "178621";
-		ASCII['E'] = "9713 54";
-		ASCII['F'] = "971 54";
-		ASCII['G'] = "971365";
-		ASCII['H'] = "9641 74 63";
-		ASCII['I'] = "79 82 13";
-		ASCII['J'] = "79 821";
-		ASCII['K'] = "71 954 53";
-		ASCII['L'] = "713";
-		ASCII['M'] = "17593";
-		ASCII['N'] = "1739";
-		ASCII['O'] = "97139";
-		ASCII['P'] = "17964";
-		ASCII['Q'] = "179621 53";
-		ASCII['R'] = "17964 53";
-		ASCII['S'] = "974631";
-		ASCII['T'] = "79 82";
-		ASCII['U'] = "712693";
-		ASCII['V'] = "729";
-		ASCII['W'] = "71539";
-		ASCII['X'] = "73 91";
-		ASCII['Y'] = "752 95";
-		ASCII['Z'] = "7913 46";
-		ASCII['['] = "9823";
-		ASCII['\\'] = "72";
-		ASCII[']'] = "7821";
-		ASCII['^'] = "486";
-		ASCII['_'] = "13";
-		ASCII['`'] = "75";
-		ASCII['a'] = "153";
-		ASCII['b'] = "71364";
-		ASCII['c'] = "6413";
-		ASCII['d'] = "93146";
-		ASCII['e'] = "31461";
-		ASCII['f'] = "289 56";
-		ASCII['g'] = "139746#";
-		ASCII['h'] = "71 463";
-		ASCII['i'] = "52 8";
-		ASCII['j'] = "521 8";
-		ASCII['k'] = "716 35";
-		ASCII['l'] = "82";
-		ASCII['m'] = "1452 563";
-		ASCII['n'] = "1463";
-		ASCII['o'] = "14631";
-		ASCII['p'] = "17964#";
-		ASCII['q'] = "39746#";
-		ASCII['r'] = "146";
-		ASCII['s'] = "6431";
-		ASCII['t'] = "823 56";
-		ASCII['u'] = "4136";
-		ASCII['v'] = "426";
-		ASCII['w'] = "4125 236";
-		ASCII['x'] = "16 34";
-		ASCII['y'] = "75 91#";
-		ASCII['z'] = "4613";
-		ASCII['{'] = "9854523";
-		ASCII['|'] = "82";
-		ASCII['}'] = "7856521";
-		ASCII['~'] = "4859~";
-		ASCII[127] = "71937 97 31";
-		for (int i = 128; i < 256; i++)ASCII[i] = " ";
-	}
-	else
-	{
-		for (int i = 0; i < 256; i++)
-		{
-			getline(file, T);
-			ASCII[(char)i] = T;
-		}
-	}
-	file.close();
-}
-
-struct Coords
-{
-	float x, y;
-	void Set(float newx, float newy)
-	{
-		x = newx; y = newy;
-	}
-};
-
-struct DottedSymbol
-{
-	float Xpos, Ypos;
-	BYTE R, G, B, A, LineWidth;
-	Coords Points[9];
-	string RenderWay;
-	vector<char> PointPlacement;
-	DottedSymbol(string RenderWay, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth = 2, BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255)
-	{
-		if (!RenderWay.size())RenderWay = " ";
-		this->RenderWay = RenderWay;
-		this->Xpos = Xpos;
-		this->LineWidth = LineWidth;
-		this->Ypos = Ypos;
-		this->R = Red; this->G = Green; this->B = Blue; this->A = Alpha;
-		for (int x = -1; x <= 1; x++)
-		{
-			for (int y = -1; y <= 1; y++)
-			{
-				Points[x + 1 + 3 * (y + 1)].Set(XUnitSize * x, YUnitSize * y);
-			}
-		}
-		UpdatePointPlacementPositions();
-	}
-	DottedSymbol(char Symbol, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth = 2, BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255) :
-		DottedSymbol(ASCII[Symbol], Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, Red, Green, Blue, Alpha)
-	{
-	}
-
-	DottedSymbol(string RenderWay, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth, DWORD* RGBAColor) :
-		DottedSymbol(RenderWay, Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, *RGBAColor >> 24, (*RGBAColor >> 16) & 0xFF, (*RGBAColor >> 8) & 0xFF, (*RGBAColor) & 0xFF)
-	{
-		delete RGBAColor;
-	}
-	DottedSymbol(char Symbol, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth, DWORD* RGBAColor) :
-		DottedSymbol(ASCII[Symbol], Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, *RGBAColor >> 24, (*RGBAColor >> 16) & 0xFF, (*RGBAColor >> 8) & 0xFF, (*RGBAColor) & 0xFF)
-	{
-		delete RGBAColor;
-	}
-	inline static BIT IsRenderwaySymb(CHAR C)
-	{
-		return (C <= '9' && C >= '0' || C == ' ');
-	}
-	inline static BIT IsNumber(CHAR C)
-	{
-		return (C <= '9' && C >= '0');
-	}
-
-	void UpdatePointPlacementPositions()
-	{
-		PointPlacement.clear();
-		if (RenderWay.size() > 1)
-		{
-			if (IsNumber(RenderWay[0]) && !IsNumber(RenderWay[1]))
-				PointPlacement.push_back(RenderWay[0]);
-			if (IsNumber(RenderWay.back()) && !IsNumber(RenderWay[RenderWay.size() - 2]))PointPlacement.push_back(RenderWay.back());
-			for (int i = 1; i < RenderWay.size() - 1; ++i)
-			{
-				if (IsNumber(RenderWay[i]) && !IsNumber(RenderWay[i - 1]) && !IsNumber(RenderWay[i + 1]))
-					PointPlacement.push_back(RenderWay[i]);
-			}
-		}
-		else if (RenderWay.size() && IsNumber(RenderWay[0]))
-		{
-			PointPlacement.push_back(RenderWay[0]);
-		}
-	}
-	void virtual Draw()
-	{
-		if (RenderWay == " ")return;
-		float VerticalFlag = 0.f;
-		CHAR BACK = 0;
-		if (RenderWay.back() == '#' || RenderWay.back() == '~')
-		{
-			BACK = RenderWay.back();
-			RenderWay.back() = ' ';
-			switch (BACK)
-			{
-				case '#':
-					VerticalFlag = Points->y - Points[3].y;
-					break;
-				case '~':
-					VerticalFlag = (Points->y - Points[3].y) / 2;
-					break;
-			}
-		}
-		glColor4ub(R, G, B, A);
-		glLineWidth(LineWidth);
-		glPointSize(LineWidth);
-		glBegin(GL_LINE_STRIP);
-		BYTE IO;
-		for (int i = 0; i < RenderWay.length(); i++)
-		{
-			if (RenderWay[i] == ' ')
-			{
-				glEnd();
-				glBegin(GL_LINE_STRIP);
-				continue;
-			}
-			IO = RenderWay[i] - '1';
-			glVertex2f(Xpos + Points[IO].x, Ypos + Points[IO].y + VerticalFlag);
-		}
-		glEnd();
-		glBegin(GL_POINTS);
-		for (int i = 0; i < PointPlacement.size(); ++i)
-			glVertex2f(Xpos + Points[PointPlacement[i] - '1'].x, Ypos + Points[PointPlacement[i] - '1'].y + VerticalFlag);
-		glEnd();
-		if (BACK)RenderWay.back() = BACK;
-	}
-	void SafePositionChange(float NewXPos, float NewYPos)
-	{
-		SafeCharMove(NewXPos - Xpos, NewYPos - Ypos);
-	}
-	void SafeCharMove(float dx, float dy)
-	{
-		Xpos += dx; Ypos += dy;
-	}
-	inline float _XUnitSize() const
-	{
-		return Points[1].x - Points[0].x;
-	}
-	inline float _YUnitSize() const
-	{
-		return Points[3].y - Points[0].y;
-	}
-	void virtual RefillGradient(DWORD* RGBAColor, DWORD* gRGBAColor, BYTE BaseColorPoint, BYTE GradColorPoint)
-	{
-		return;
-	}
-	void virtual RefillGradient(BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255,
-		BYTE gRed = 255, BYTE gGreen = 255, BYTE gBlue = 255, BYTE gAlpha = 255,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8)
-	{
-		return;
-	}
-};
-
-FLOAT lFONT_HEIGHT_TO_WIDTH = 2.5;
-namespace lFontSymbolsInfo
-{
-bool IsInitialised = false;
-GLuint CurrentFont = 0;
-HFONT SelectedFont;
-INT32 Size = 16;
-struct lFontSymbInfosListDestructor
-{
-	bool abc;
-	~lFontSymbInfosListDestructor()
-	{
-		glDeleteLists(CurrentFont, 256);
-	}
-};
-lFontSymbInfosListDestructor __wFSILD = {0};
-void InitialiseFont(string FontName)
-{
-	if (!IsInitialised)
-	{
-		CurrentFont = glGenLists(256);
-		IsInitialised = true;
-	}
-	wglUseFontBitmaps(hDc, 0, 255, CurrentFont);
-	SelectedFont = CreateFontA(
-		Size * (BEG_RANGE / RANGE),
-		(Size > 0) ? Size * (BEG_RANGE / RANGE) / lFONT_HEIGHT_TO_WIDTH : 0,
-		0, 0,
-		FW_NORMAL,
-		FALSE,
-		FALSE,
-		FALSE,
-		DEFAULT_CHARSET,
-		OUT_TT_PRECIS,
-		CLIP_DEFAULT_PRECIS,
-		ANTIALIASED_QUALITY,
-		FF_DONTCARE | DEFAULT_PITCH,
-		FontName.c_str()
-	);
-	if (SelectedFont)
-		SelectObject(hDc, SelectedFont);
-}
-inline void CallListOnChar(char C)
-{
-	if (IsInitialised)
-	{
-		const char PsChStr[2] = {C,0};
-		glPushAttrib(GL_LIST_BIT);
-		glListBase(CurrentFont);
-		glCallLists(1, GL_UNSIGNED_BYTE, (const char*)(PsChStr));
-		glPopAttrib();
-	}
-}
-inline void CallListOnString(const string& S)
-{
-	if (IsInitialised)
-	{
-		glPushAttrib(GL_LIST_BIT);
-		glListBase(CurrentFont);
-		glCallLists(1, GL_UNSIGNED_BYTE, S.c_str());
-		glPopAttrib();
-	}
-}
-const _MAT2 MT = {{0, 1}, {0, 0}, {0, 0}, {0, 1}};;
-}
-struct lFontSymbol : DottedSymbol
-{
-	char Symb;
-	GLYPHMETRICS GM = {0};
-	lFontSymbol(char Symb, float CXpos, float CYpos, float XUnitSize, float YUnitSize, DWORD RGBA) :
-		DottedSymbol(" ", CXpos, CYpos, XUnitSize, YUnitSize, 1, RGBA >> 24, (RGBA >> 16) & 0xFF, (RGBA >> 8) & 0xFF, RGBA & 0xFF)
-	{
-		this->Symb = Symb;
-	}
-	void Draw() override
-	{
-		float PixelSize = (RANGE * 2) / WINDXSIZE;
-		float rotX = Xpos, rotY = Ypos;
-		//rotate(rotX, rotY);
-		if (fabsf(rotX) + 2.5 > PixelSize * WindX / 2 || fabsf(rotY) + 2.5 > PixelSize * WindY / 2)
-			return;
-		SelectObject(hDc, lFontSymbolsInfo::SelectedFont);
-		GetGlyphOutline(hDc, Symb, GGO_METRICS, &GM, 0, NULL, &lFontSymbolsInfo::MT);
-		glColor4ub(R, G, B, A);
-		glRasterPos2f(Xpos - PixelSize * GM.gmBlackBoxX * 0.5, Ypos - _YUnitSize() * 0.5);
-		lFontSymbolsInfo::CallListOnChar(Symb);
-	}
-};
-
-struct BiColoredDottedSymbol : DottedSymbol
-{
-	BYTE gR[9], gG[9], gB[9], gA[9];
-	BYTE _PointData;
-	BiColoredDottedSymbol(string RenderWay, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth = 2,
-		BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255,
-		BYTE gRed = 255, BYTE gGreen = 255, BYTE gBlue = 255, BYTE gAlpha = 255,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8) :
-		DottedSymbol(RenderWay, Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, new DWORD(0))
-	{
-		this->_PointData = (((BaseColorPoint & 0xF) << 4) | (GradColorPoint & 0xF));
-		if (BaseColorPoint == GradColorPoint)
-		{
-			for (int i = 0; i < 9; i++)
-			{
-				gR[i] = Red;
-				gG[i] = Green;
-				gB[i] = Blue;
-				gA[i] = Alpha;
-			}
-		}
-		else
-		{
-			BaseColorPoint--;
-			GradColorPoint--;
-			RefillGradient(Red, Green, Blue, Alpha, gRed, gGreen, gBlue, gAlpha, BaseColorPoint, GradColorPoint);
-		}
-	}
-	BiColoredDottedSymbol(char Symbol, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth = 2,
-		BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255,
-		BYTE gRed = 255, BYTE gGreen = 255, BYTE gBlue = 255, BYTE gAlpha = 255,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8) : BiColoredDottedSymbol(ASCII[Symbol], Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, Red, Green, Blue, Alpha, gRed, gGreen, gBlue, gAlpha, BaseColorPoint, GradColorPoint)
-	{
-	}
-
-	BiColoredDottedSymbol(char Symbol, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth,
-		DWORD* RGBAColor, DWORD* gRGBAColor,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8) : BiColoredDottedSymbol(ASCII[Symbol], Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, *RGBAColor >> 24, (*RGBAColor >> 16) & 0xFF, (*RGBAColor >> 8) & 0xFF, (*RGBAColor) & 0xFF, * gRGBAColor >> 24, (*gRGBAColor >> 16) & 0xFF, (*gRGBAColor >> 8) & 0xFF, * gRGBAColor & 0xFF, BaseColorPoint, GradColorPoint)
-	{
-		delete RGBAColor;
-		delete gRGBAColor;
-	}
-	BiColoredDottedSymbol(string RenderWay, float Xpos, float Ypos, float XUnitSize, float YUnitSize, BYTE LineWidth,
-		DWORD* RGBAColor, DWORD* gRGBAColor,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8) : BiColoredDottedSymbol(RenderWay, Xpos, Ypos, XUnitSize, YUnitSize, LineWidth, *RGBAColor >> 24, (*RGBAColor >> 16) & 0xFF, (*RGBAColor >> 8) & 0xFF, (*RGBAColor) & 0xFF, * gRGBAColor >> 24, (*gRGBAColor >> 16) & 0xFF, (*gRGBAColor >> 8) & 0xFF, * gRGBAColor & 0xFF, BaseColorPoint, GradColorPoint)
-	{
-		delete RGBAColor;
-		delete gRGBAColor;
-	}
-	void RefillGradient(BYTE Red = 255, BYTE Green = 255, BYTE Blue = 255, BYTE Alpha = 255,
-		BYTE gRed = 255, BYTE gGreen = 255, BYTE gBlue = 255, BYTE gAlpha = 255,
-		BYTE BaseColorPoint = 5, BYTE GradColorPoint = 8) override
-	{
-		float xbase = (((float)(BaseColorPoint % 3)) - 1.f), ybase = (((float)(BaseColorPoint / 3)) - 1.f),
-			xgrad = (((float)(GradColorPoint % 3)) - 1.f), ygrad = (((float)(GradColorPoint / 3)) - 1.f);
-		float ax = xgrad - xbase, ay = ygrad - ybase, t;
-		float ial = 1.f / (ax * ax + ay * ay);
-		///R
-		for (int x = -1; x <= 1; x++)
-		{
-			for (int y = -1; y <= 1; y++)
-			{
-				t = (ax * (x - xbase) + ay * (y - ybase)) * ial;
-				t = (Red * t + (1.f - t) * gRed);
-				if (t < 0)t = 0;
-				if (t > 255)t = 255;
-				gR[(x + 1) + (3 * (y + 1))] = round(t);
-			}
-		}
-		///G
-		for (int x = -1; x <= 1; x++)
-		{
-			for (int y = -1; y <= 1; y++)
-			{
-				t = (ax * (x - xbase) + ay * (y - ybase)) * ial;
-				t = (Green * t + (1.f - t) * gGreen);
-				if (t < 0)t = 0;
-				if (t > 255)t = 255;
-				gG[(x + 1) + (3 * (y + 1))] = round(t);
-			}
-		}
-		///B
-		for (int x = -1; x <= 1; x++)
-		{
-			for (int y = -1; y <= 1; y++)
-			{
-				t = (ax * (x - xbase) + ay * (y - ybase)) * ial;
-				t = (Blue * t + (1.f - t) * gBlue);
-				if (t < 0)t = 0;
-				if (t > 255)t = 255;
-				gB[(x + 1) + (3 * (y + 1))] = round(t);
-			}
-		}
-		///A
-		for (int x = -1; x <= 1; x++)
-		{
-			for (int y = -1; y <= 1; y++)
-			{
-				t = (ax * (x - xbase) + ay * (y - ybase)) * ial;
-				t = (Alpha * t + (1.f - t) * gAlpha);
-				if (t < 0)t = 0;
-				if (t > 255)t = 255;
-				gA[(x + 1) + (3 * (y + 1))] = round(t);
-			}
-		}
-	}
-	void RefillGradient(DWORD* RGBAColor, DWORD* gRGBAColor, BYTE BaseColorPoint, BYTE GradColorPoint) override
-	{
-		RefillGradient(*RGBAColor >> 24, (*RGBAColor >> 16) & 0xFF, (*RGBAColor >> 8) & 0xFF, (*RGBAColor) & 0xFF, *gRGBAColor >> 24, (*gRGBAColor >> 16) & 0xFF, (*gRGBAColor >> 8) & 0xFF, *gRGBAColor & 0xFF, BaseColorPoint, GradColorPoint);
-		delete RGBAColor;
-		delete gRGBAColor;
-	}
-	void Draw() override
-	{
-		if (RenderWay == " ")return;
-		float VerticalFlag = 0.;
-		CHAR BACK = 0;
-		if (RenderWay.back() == '#' || RenderWay.back() == '~')
-		{
-			BACK = RenderWay.back();
-			RenderWay.back() = ' ';
-			switch (BACK)
-			{
-				case '#':
-					VerticalFlag = Points->y - Points[3].y;
-					break;
-				case '~':
-					VerticalFlag = (Points->y - Points[3].y) / 2;
-					break;
-			}
-		}
-		if (RenderWay.back() == '#')
-		{
-			RenderWay.back() = ' ';
-			VerticalFlag = Points->y - Points[4].y;
-		}
-		BYTE IO;
-		glLineWidth(LineWidth);
-		glPointSize(LineWidth);
-		glBegin(GL_LINE_STRIP);
-		for (int i = 0; i < RenderWay.length(); i++)
-		{
-			if (RenderWay[i] == ' ')
-			{
-				glEnd();
-				glBegin(GL_LINE_STRIP);
-				continue;
-			}
-			IO = RenderWay[i] - '1';
-			//printf("%x %x %x %x\n", gR[IO], gG[IO], gB[IO], gA[IO]);
-			glColor4ub(gR[IO], gG[IO], gB[IO], gA[IO]);
-			glVertex2f(Xpos + Points[IO].x, Ypos + Points[IO].y + VerticalFlag);
-		}
-		glEnd();
-		glBegin(GL_POINTS);
-		for (int i = 0; i < PointPlacement.size(); ++i)
-		{
-			IO = PointPlacement[i] - '1';
-			glColor4ub(gR[IO], gG[IO], gB[IO], gA[IO]);
-			glVertex2f(Xpos + Points[IO].x, Ypos + Points[IO].y + VerticalFlag);
-		}
-		glEnd();
-		if (BACK)RenderWay.back() = BACK;
-	}
-};
-
-struct SingleTextLine
-{
-	string _CurrentText;
-	float CXpos, CYpos;
-	float SpaceWidth;
-	DWORD RGBAColor, gRGBAColor;
-	float CalculatedWidth, CalculatedHeight;
-	BIT isBicolored, isListedFont;
-	float _XUnitSize, _YUnitSize;
-	vector<DottedSymbol*> Chars;
-	~SingleTextLine()
-	{
-		for (auto i = Chars.begin(); i != Chars.end(); i++)
-			if (*i)delete* i;
-		Chars.clear();
-	}
-	SingleTextLine(string Text, float CXpos, float CYpos, float XUnitSize, float YUnitSize, float SpaceWidth, BYTE LineWidth = 2, DWORD RGBAColor = 0xFFFFFFFF, DWORD* RGBAGradColor = NULL, BYTE OrigNGradPoints = ((5 << 4) | 5), bool isListedFont = false)
-	{
-		if (!Text.size())Text = " ";
-		this->_CurrentText = Text;
-		CalculatedHeight = 2 * YUnitSize;
-		CalculatedWidth = Text.size() * 2.f * XUnitSize + (Text.size() - 1) * SpaceWidth;
-		this->CXpos = CXpos;
-		this->CYpos = CYpos;
-		this->RGBAColor = RGBAColor;
-		this->SpaceWidth = SpaceWidth;
-		this->_XUnitSize = XUnitSize;
-		this->_YUnitSize = YUnitSize;
-		this->isListedFont = isListedFont;
-		float CharXPosition = CXpos - (CalculatedWidth * 0.5) + XUnitSize, CharXPosIncrement = 2.f * XUnitSize + SpaceWidth;
-		for (int i = 0; i < Text.size(); i++)
-		{
-			if (!RGBAGradColor && !isListedFont)Chars.push_back(
-				new DottedSymbol(Text[i], CharXPosition, CYpos, XUnitSize, YUnitSize, LineWidth, new DWORD(RGBAColor))
-			);
-			else if (!isListedFont) Chars.push_back(
-				new BiColoredDottedSymbol(Text[i], CharXPosition, CYpos, XUnitSize, YUnitSize, LineWidth, new DWORD(RGBAColor), new DWORD(*RGBAGradColor), (BYTE)(OrigNGradPoints >> 4), (BYTE)(OrigNGradPoints & 0xF))
-			);
-			else Chars.push_back(
-				new lFontSymbol(Text[i], CharXPosition, CYpos, XUnitSize, YUnitSize, RGBAColor)
-			);
-			CharXPosition += CharXPosIncrement;
-		}
-		if (RGBAGradColor)
-		{
-			this->isBicolored = true;
-			this->gRGBAColor = *RGBAGradColor;
-			delete RGBAGradColor;
-		}
-		else
-			this->isBicolored = false;
-	}
-	void SafeColorChange(DWORD NewRGBAColor)
-	{
-		if (isBicolored)
-		{
-			SafeColorChange(NewRGBAColor, gRGBAColor,
-				((BiColoredDottedSymbol*)(this->Chars.front()))->_PointData >> 4,
-				((BiColoredDottedSymbol*)(this->Chars.front()))->_PointData & 0xF
-			);
-			return;
-		}
-		BYTE R = (NewRGBAColor >> 24), G = (NewRGBAColor >> 16) & 0xFF, B = (NewRGBAColor >> 8) & 0xFF, A = (NewRGBAColor) & 0xFF;
-		RGBAColor = NewRGBAColor;
-		for (int i = 0; i < Chars.size(); i++)
-		{
-			Chars[i]->R = R;
-			Chars[i]->G = G;
-			Chars[i]->B = B;
-			Chars[i]->A = A;
-		}
-	}
-	void SafeColorChange(DWORD NewBaseRGBAColor, DWORD NewGRGBAColor, BYTE BasePoint, BYTE gPoint)
-	{
-		if (!isBicolored)
-		{
-			SafeColorChange(NewBaseRGBAColor);
-			return;
-		}
-		for (int i = 0; i < Chars.size(); i++)
-		{
-			Chars[i]->RefillGradient(new DWORD(NewBaseRGBAColor), new DWORD(NewGRGBAColor), BasePoint, gPoint);
-		}
-	}
-	void SafeChangePosition(float NewCXPos, float NewCYPos)
-	{
-		NewCXPos = NewCXPos - CXpos;
-		NewCYPos = NewCYPos - CYpos;
-		SafeMove(NewCXPos, NewCYPos);
-	}
-	void SafeMove(float dx, float dy)
-	{
-		CXpos += dx;
-		CYpos += dy;
-		for (int i = 0; i < Chars.size(); i++)
-			Chars[i]->SafeCharMove(dx, dy);
-	}
-	BIT SafeReplaceChar(int i, char CH)
-	{
-		if (i >= Chars.size())return 0;
-		if (isListedFont)
-		{
-			((lFontSymbol*)Chars[i])->Symb = CH;
-		}
-		else
-		{
-			Chars[i]->RenderWay = ASCII[CH];
-			Chars[i]->UpdatePointPlacementPositions();
-		}
-		return 1;
-	}
-	BIT SafeReplaceChar(int i, string CHrenderway)
-	{
-		if (i >= Chars.size())return 0;
-		if (isListedFont) return 0;
-		Chars[i]->RenderWay = CHrenderway;
-		Chars[i]->UpdatePointPlacementPositions();
-		return 1;
-	}
-	void RecalculateWidth()
-	{
-		CalculatedWidth = Chars.size() * (2.f * _XUnitSize) + (Chars.size() - 1) * SpaceWidth;
-		float CharXPosition = CXpos - (CalculatedWidth * 0.5f) + _XUnitSize, CharXPosIncrement = 2.f * _XUnitSize + SpaceWidth;
-		for (int i = 0; i < Chars.size(); i++)
-		{
-			Chars[i]->Xpos = CharXPosition;
-			CharXPosition += CharXPosIncrement;
-		}
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float newX, float newY)
-	{
-		///STL_CHANGE_POSITION_ARGUMENT_LEFT
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * CalculatedWidth,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * CalculatedHeight;
-		SafeChangePosition(newX + CW, newY + CH);
-	}
-	void SafeStringReplace(string NewString)
-	{
-		if (!NewString.size()) NewString = " ";
-		_CurrentText = NewString;
-		while (NewString.size() > Chars.size())
-		{
-			if (isBicolored)
-				Chars.push_back(new BiColoredDottedSymbol((*((BiColoredDottedSymbol*)(Chars.front())))));
-			else if (isListedFont)
-				Chars.push_back(new lFontSymbol(*((lFontSymbol*)(Chars.front()))));
-			else
-				Chars.push_back(new DottedSymbol(*(Chars.front())));
-		}
-		while (NewString.size() < Chars.size()) Chars.pop_back();
-		for (int i = 0; i < Chars.size(); i++)
-			SafeReplaceChar(i, NewString[i]);
-		RecalculateWidth();
-	}
-	void Draw()
-	{
-		for (int i = 0; i < Chars.size(); i++)
-		{
-			Chars[i]->Draw();
-		}
-	}
-};
-
-#define CharWidthPerHeight_Fonted 0.666f
-#define CharWidthPerHeight 0.5f
-#define CharSpaceBetween(CharHeight) CharHeight/2.f
-#define CharLineWidth(CharHeight) ceil(CharHeight/7.5f)
-struct SingleTextLineSettings
-{
-	string STLstring;
-	float CXpos, CYpos, XUnitSize, YUnitSize;
-	BYTE BasePoint, GradPoint, LineWidth, SpaceWidth;
-	BIT isFonted;
-	DWORD RGBAColor, gRGBAColor;
-	SingleTextLineSettings(string Text, float CXpos, float CYpos, float XUnitSize, float YUnitSize, BYTE LineWidth, BYTE SpaceWidth, DWORD RGBAColor, DWORD gRGBAColor, BYTE BasePoint, BYTE GradPoint)
-	{
-		this->STLstring = Text;
-		this->CXpos = CXpos;
-		this->CYpos = CYpos;
-		this->XUnitSize = XUnitSize;
-		this->YUnitSize = YUnitSize;
-		this->RGBAColor = RGBAColor;
-		this->gRGBAColor = gRGBAColor;
-		this->LineWidth = LineWidth;
-		this->SpaceWidth = SpaceWidth;
-		this->BasePoint = BasePoint;
-		this->GradPoint = GradPoint;
-		this->isFonted = 0;
-	}
-	SingleTextLineSettings(string Text, float CXpos, float CYpos, float XUnitSize, float YUnitSize, BYTE LineWidth, BYTE SpaceWidth, DWORD RGBAColor) :
-		SingleTextLineSettings(Text, CXpos, CYpos, XUnitSize, YUnitSize, LineWidth, SpaceWidth, RGBAColor, 0, 255, 255)
-	{
-	}
-	SingleTextLineSettings(string Text, float CXpos, float CYpos, float CharHeight, DWORD RGBAColor, DWORD gRGBAColor, BYTE BasePoint, BYTE GradPoint) :
-		SingleTextLineSettings(Text, CXpos, CYpos, CharHeight* CharWidthPerHeight / 2, CharHeight / 2, CharLineWidth(CharHeight), CharSpaceBetween(CharHeight), RGBAColor, gRGBAColor, BasePoint, GradPoint)
-	{
-	}
-	SingleTextLineSettings(string Text, float CXpos, float CYpos, float CharHeight, DWORD RGBAColor) :
-		SingleTextLineSettings(Text, CXpos, CYpos, CharHeight, RGBAColor, 0, 255, 255)
-	{
-	}
-	SingleTextLineSettings(float XUnitSize, float YUnitSize, DWORD RGBAColor) :
-		SingleTextLineSettings("_", 0, 0, YUnitSize, RGBAColor)
-	{
-		this->isFonted = 1;
-		this->XUnitSize = XUnitSize;
-		this->YUnitSize = YUnitSize;
-		this->RGBAColor = RGBAColor;
-	}
-	SingleTextLineSettings(float CharHeight, DWORD RGBAColor) :
-		SingleTextLineSettings(CharHeight* CharWidthPerHeight / 4, CharHeight / 2, RGBAColor)
-	{
-	}
-	SingleTextLineSettings(SingleTextLine* Example, BIT KeepText = false) :
-		SingleTextLineSettings(
-			((KeepText) ? Example->_CurrentText : " "), Example->CXpos, Example->CYpos, Example->_XUnitSize, Example->_YUnitSize, Example->Chars.front()->LineWidth, Example->SpaceWidth, Example->RGBAColor, Example->gRGBAColor,
-			((Example->isBicolored) ? (((BiColoredDottedSymbol*)(Example->Chars.front()))->_PointData & 0xF0) >> 4 : 0xF), ((Example->isBicolored) ? (((BiColoredDottedSymbol*)(Example->Chars.front()))->_PointData) & 0xF : 0xF)
-		)
-	{
-		this->isFonted = Example->isListedFont;
-	}
-	SingleTextLine* CreateOne()
-	{
-		if (GradPoint & 0xF0 && !isFonted)
-			return new SingleTextLine(STLstring, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor);
-		if (!isFonted) return new SingleTextLine(STLstring, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor, new DWORD(gRGBAColor), ((BasePoint & 0xF) << 4) | (GradPoint & 0xF));
-		return new SingleTextLine(STLstring, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor, nullptr, 0xF, true);
-	}
-	SingleTextLine* CreateOne(string TextOverride)
-	{
-		if (GradPoint & 0xF0 && !isFonted)
-			return new SingleTextLine(TextOverride, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor);
-		if (!isFonted) return new SingleTextLine(TextOverride, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor, new DWORD(gRGBAColor), ((BasePoint & 0xF) << 4) | (GradPoint & 0xF));
-		return new SingleTextLine(TextOverride, CXpos, CYpos, XUnitSize, YUnitSize, SpaceWidth, LineWidth, RGBAColor, nullptr, 0xF, true);
-	}
-	void SetNewPos(float NewXPos, float NewYPos)
-	{
-		this->CXpos = NewXPos;
-		this->CYpos = NewYPos;
-	}
-	void Move(float dx, float dy)
-	{
-		this->CXpos += dx;
-		this->CYpos += dy;
-	}
-};
-
-struct HandleableUIPart
-{
-	recursive_mutex Lock;
-	~HandleableUIPart() {}
-	HandleableUIPart() {}
-	BIT virtual MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right*/, CHAR State /*-1 down, 1 up*/) = 0;
-	void virtual Draw() = 0;
-	void virtual SafeMove(float, float) = 0;
-	void virtual SafeChangePosition(float, float) = 0;
-	void virtual SafeChangePosition_Argumented(BYTE, float, float) = 0;
-	void virtual SafeStringReplace(string) = 0;
-	void virtual KeyboardHandler(char CH) = 0;
-	inline DWORD virtual TellType()
-	{
-		return TT_UNSPECIFIED;
-	}
-};
-
-struct CheckBox : HandleableUIPart
-{///NeedsTest
-	float Xpos, Ypos, SideSize;
-	DWORD BorderRGBAColor, UncheckedRGBABackground, CheckedRGBABackground;
-	SingleTextLine* Tip;
-	BIT State, Focused;
-	BYTE BorderWidth;
-	~CheckBox()
-	{
-		Lock.lock();
-		if (Tip)delete Tip;
-		Lock.unlock();
-	}
-	CheckBox(float Xpos, float Ypos, float SideSize, DWORD BorderRGBAColor, DWORD UncheckedRGBABackground, DWORD CheckedRGBABackground, BYTE BorderWidth, BIT StartState = false, SingleTextLineSettings* TipSettings = NULL, _Align TipAlign = _Align::left, string TipText = " ")
-	{
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->SideSize = SideSize;
-		this->BorderRGBAColor = BorderRGBAColor;
-		this->UncheckedRGBABackground = UncheckedRGBABackground;
-		this->CheckedRGBABackground = CheckedRGBABackground;
-		this->State = StartState;
-		this->Focused = 0;
-		this->BorderWidth = BorderWidth;
-		if (TipSettings)
-		{
-			this->Tip = TipSettings->CreateOne(TipText);
-			this->Tip->SafeChangePosition_Argumented(TipAlign, Xpos - ((TipAlign == _Align::left) ? 0.5f : ((TipAlign == _Align::right) ? -0.5f : 0)) * SideSize, Ypos - SideSize);
-		}
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		float hSideSize = 0.5f * SideSize;
-		if (State)
-			GLCOLOR(CheckedRGBABackground);
-		else
-			GLCOLOR(UncheckedRGBABackground);
-		glBegin(GL_QUADS);
-		glVertex2f(Xpos + hSideSize, Ypos + hSideSize);
-		glVertex2f(Xpos - hSideSize, Ypos + hSideSize);
-		glVertex2f(Xpos - hSideSize, Ypos - hSideSize);
-		glVertex2f(Xpos + hSideSize, Ypos - hSideSize);
-		glEnd();
-		if ((BYTE)BorderRGBAColor && BorderWidth)
-		{
-			GLCOLOR(BorderRGBAColor);
-			glLineWidth(BorderWidth);
-			glBegin(GL_LINE_LOOP);
-			glVertex2f(Xpos + hSideSize, Ypos + hSideSize);
-			glVertex2f(Xpos - hSideSize, Ypos + hSideSize);
-			glVertex2f(Xpos - hSideSize, Ypos - hSideSize);
-			glVertex2f(Xpos + hSideSize, Ypos - hSideSize);
-			glEnd();
-			glPointSize(BorderWidth);
-			glBegin(GL_POINTS);
-			glVertex2f(Xpos + hSideSize, Ypos + hSideSize);
-			glVertex2f(Xpos - hSideSize, Ypos + hSideSize);
-			glVertex2f(Xpos - hSideSize, Ypos - hSideSize);
-			glVertex2f(Xpos + hSideSize, Ypos - hSideSize);
-			glEnd();
-		}
-		if (Focused && Tip)Tip->Draw();
-		Lock.unlock();
-	}
-	void SafeMove(float dx, float dy) override
-	{
-		Lock.lock();
-		Xpos += dx;
-		Ypos += dy;
-		if (Tip)Tip->SafeMove(dx, dy);
-		Lock.unlock();
-	}
-	void SafeChangePosition(float NewX, float NewY) override
-	{
-		Lock.lock();
-		NewX -= Xpos;
-		NewY -= Ypos;
-		SafeMove(NewX, NewY);
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * SideSize,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * SideSize;
-		SafeChangePosition(NewX + CW, NewY + CH);
-		Lock.unlock();
-	}
-	void KeyboardHandler(CHAR CH) override
-	{
-		return;
-	}
-	void SafeStringReplace(string TipString) override
-	{
-		Lock.lock();
-		if (Tip)Tip->SafeStringReplace(TipString);
-		Lock.unlock();
-	}
-	void FocusChange()
-	{
-		Lock.lock();
-		this->Focused = !this->Focused;
-		BorderRGBAColor = (((~(BorderRGBAColor >> 8)) << 8) | (BorderRGBAColor & 0xFF));
-		Lock.unlock();
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
-	{
-		Lock.lock();
-		if (fabsf(mx - Xpos) < 0.5 * SideSize && fabsf(my - Ypos) < 0.5 * SideSize)
-		{
-			if (!Focused)
-				FocusChange();
-			if (Button)
-			{
-				//cout << "State switch from " << State << endl;
-				if (State == 1)
-					this->State = !this->State;
-				Lock.unlock();
-				return 1;
-			}
-			else
-			{
-				Lock.unlock();
-				return 0;
-			}
-		}
-		else
-		{
-			if (Focused)
-				FocusChange();
-			Lock.unlock();
-			return 0;
-		}
-	}
-	inline DWORD TellType() override
-	{
-		return _TellType::checkbox;
-	}
-};
-
-struct InputField : HandleableUIPart
-{
-	enum PassCharsType
-	{
-		PassNumbers = 0b1,
-		PassFirstPoint = 0b10,
-		PassFrontMinusSign = 0b100,
-		PassAll = 0xFF
-	};
-	enum Type
-	{
-		NaturalNumbers = PassCharsType::PassNumbers,
-		WholeNumbers = PassCharsType::PassNumbers | PassCharsType::PassFrontMinusSign,
-		FP_PositiveNumbers = PassCharsType::PassNumbers | PassCharsType::PassFirstPoint,
-		FP_Any = PassCharsType::PassNumbers | PassCharsType::PassFirstPoint | PassCharsType::PassFrontMinusSign,
-		Text = PassCharsType::PassAll,
-	};
-	_Align InputAlign, TipAlign;
-	Type InputType;
-	string CurrentString, DefaultString;
-	string* OutputSource;
-	DWORD MaxChars, BorderRGBAColor;
-	float Xpos, Ypos, Height, Width;
-	BIT Focused, FirstInput;
-	SingleTextLine* STL;
-	SingleTextLine* Tip;
-	InputField(string DefaultString, float Xpos, float Ypos, float Height, float Width, SingleTextLineSettings* DefaultStringSettings, string* OutputSource, DWORD BorderRGBAColor, SingleTextLineSettings* TipLineSettings = NULL, string TipLineText = " ", DWORD MaxChars = 0, _Align InputAlign = _Align::left, _Align TipAlign = _Align::center, Type InputType = Type::Text)
-	{
-		this->DefaultString = DefaultString;
-		DefaultStringSettings->SetNewPos(Xpos, Ypos);
-		this->STL = DefaultStringSettings->CreateOne(DefaultString);
-		if (TipLineSettings)
-		{
-			this->Tip = TipLineSettings->CreateOne(TipLineText);
-			this->Tip->SafeChangePosition_Argumented(TipAlign, Xpos - ((TipAlign == _Align::left) ? 0.5f : ((TipAlign == _Align::right) ? -0.5f : 0)) * Width, Ypos - Height);
-		}
-		else this->Tip = NULL;
-		this->InputAlign = InputAlign;
-		this->InputType = InputType;
-		this->TipAlign = TipAlign;
-
-		this->MaxChars = MaxChars;
-		this->BorderRGBAColor = BorderRGBAColor;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Height = (DefaultStringSettings->YUnitSize * 2 > Height) ? DefaultStringSettings->YUnitSize * 2 : Height;
-		this->Width = Width;
-		this->CurrentString = "";//DefaultString;
-		this->FirstInput = this->Focused = false;
-		this->OutputSource = OutputSource;
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right, 0 move*/, CHAR State /*-1 down, 1 up*/) override
-	{
-		if (abs(mx - Xpos) < 0.5 * Width && abs(my - Ypos) < 0.5 * Height)
-		{
-			if (!Focused)
-				FocusChange();
-			if (Button)return 1;
-			else return 0;
-		}
-		else
-		{
-			if (Focused)
-				FocusChange();
-			return 0;
-		}
-	}
-	void SafeMove(float dx, float dy)
-	{
-		Lock.lock();
-		STL->SafeMove(dx, dy);
-		if (Tip)Tip->SafeMove(dx, dy);
-		Xpos += dx;
-		Ypos += dy;
-		Lock.unlock();
-	}
-	void SafeChangePosition(float NewX, float NewY)
-	{
-		Lock.lock();
-		NewX = Xpos - NewX;
-		NewY = Ypos - NewY;
-		SafeMove(NewX, NewY);
-		Lock.unlock();
-	}
-	void FocusChange()
-	{
-		Lock.lock();
-		this->Focused = !this->Focused;
-		BorderRGBAColor = (((~(BorderRGBAColor >> 8)) << 8) | (BorderRGBAColor & 0xFF));
-		Lock.unlock();
-	}
-	void UpdateInputString(string NewString = "")
-	{
-		Lock.lock();
-		if (NewString.size())CurrentString = "";
-		float x = Xpos - ((InputAlign == _Align::left) ? 1 : ((InputAlign == _Align::right) ? -1 : 0)) * (0.5f * Width - STL->_XUnitSize);
-		this->STL->SafeStringReplace((NewString.size()) ? NewString.substr(0, this->MaxChars) : CurrentString);
-		this->STL->SafeChangePosition_Argumented(InputAlign, x, Ypos);
-		Lock.unlock();
-	}
-	void BackSpace()
-	{
-		Lock.lock();
-		ProcessFirstInput();
-		if (CurrentString.size())
-		{
-			CurrentString.pop_back();
-			UpdateInputString();
-		}
-		else
-		{
-			this->STL->SafeStringReplace(" ");
-		}
-		Lock.unlock();
-	}
-	void FlushCurrentStringWithoutGUIUpdate(BIT SetDefault = false)
-	{
-		Lock.lock();
-		this->CurrentString = (SetDefault) ? this->DefaultString : "";
-		Lock.unlock();
-	}
-	void PutIntoSource(string* AnotherSource = NULL)
-	{
-		Lock.lock();
-		if (OutputSource)
-		{
-			if (CurrentString.size())
-				*OutputSource = CurrentString;
-		}
-		else if (AnotherSource)
-			if (CurrentString.size())
-				*AnotherSource = CurrentString;
-		Lock.unlock();
-	}
-	void ProcessFirstInput()
-	{
-		Lock.lock();
-		if (FirstInput)
-		{
-			FirstInput = 0;
-			CurrentString = "";
-		}
-		Lock.unlock();
-	}
-	void KeyboardHandler(char CH)
-	{
-		Lock.lock();
-		if (Focused)
-		{
-			if (CH >= 32)
-			{
-				if (InputType & PassCharsType::PassNumbers)
-				{
-					if (CH >= '0' && CH <= '9')
-					{
-						Input(CH);
-						Lock.unlock();
-						return;
-					}
-				}
-				if (InputType & PassCharsType::PassFrontMinusSign)
-				{
-					if (CH == '-' && CurrentString.empty())
-					{
-						Input(CH);
-						Lock.unlock();
-						return;
-					}
-				}
-				if (InputType & PassCharsType::PassFirstPoint)
-				{
-					if (CH == '.' && CurrentString.find('.') >= CurrentString.size())
-					{
-						Input(CH);
-						Lock.unlock();
-						return;
-					}
-				}
-
-				if (InputType == PassCharsType::PassAll)Input(CH);
-			}
-			else if (CH == 13)PutIntoSource();
-			else if (CH == 8)BackSpace();
-		}
-		Lock.unlock();
-	}
-	void Input(char CH)
-	{
-		Lock.lock();
-		ProcessFirstInput();
-		if (!MaxChars || CurrentString.size() < MaxChars)
-		{
-			CurrentString.push_back(CH);
-			UpdateInputString();
-		}
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY)
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * Width,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * Height;
-		SafeChangePosition(NewX + CW, NewY + CH);
-		Lock.unlock();
-	}
-	void SafeStringReplace(string NewString) override
-	{
-		Lock.lock();
-		CurrentString = NewString.substr(0, this->MaxChars);
-		UpdateInputString(NewString);
-		FirstInput = 1;
-		Lock.unlock();
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		GLCOLOR(BorderRGBAColor);
-		glLineWidth(1);
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(Xpos + 0.5f * Width, Ypos + 0.5f * Height);
-		glVertex2f(Xpos - 0.5f * Width, Ypos + 0.5f * Height);
-		glVertex2f(Xpos - 0.5f * Width, Ypos - 0.5f * Height);
-		glVertex2f(Xpos + 0.5f * Width, Ypos - 0.5f * Height);
-		glEnd();
-		this->STL->Draw();
-		if (Focused && Tip)Tip->Draw();
-		Lock.unlock();
-	}
-	inline DWORD TellType() override
-	{
-		return TT_INPUT_FIELD;
-	}
-};
-
-struct Button : HandleableUIPart
-{
-	SingleTextLine* STL, * Tip;
-	float Xpos, Ypos;
-	float Width, Height;
-	DWORD RGBAColor, RGBABackground, RGBABorder;
-	DWORD HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder;
-	BYTE BorderWidth;
-	BIT Hovered;
-	void(*OnClick)();
-	~Button()
-	{
-		delete STL;
-		if (Tip)delete Tip;
-	}
-	Button(string ButtonText, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, DWORD gRGBAColor, BYTE BasePoint/*15 if gradient is disabled*/, BYTE GradPoint, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder, SingleTextLineSettings* Tip, string TipText = " ")
-	{
-		SingleTextLineSettings STLS(ButtonText, Xpos, Ypos, CharHeight, RGBAColor, gRGBAColor, BasePoint, GradPoint);
-		this->STL = STLS.CreateOne();
-		if (Tip)
-		{
-			Tip->SetNewPos(Xpos, Ypos - Height);
-			this->Tip = Tip->CreateOne(TipText);
-		}
-		else this->Tip = NULL;
-		this->BorderWidth = BorderWidth;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Width = Width;
-		this->Height = Height;
-		this->RGBAColor = RGBAColor;
-		this->RGBABorder = RGBABorder;
-		this->RGBABackground = RGBABackground;
-		this->HoveredRGBAColor = HoveredRGBAColor;
-		this->HoveredRGBABorder = HoveredRGBABorder;
-		this->HoveredRGBABackground = HoveredRGBABackground;
-		this->Hovered = 0;
-		this->OnClick = OnClick;
-	}
-	Button(string ButtonText, SingleTextLineSettings* ButtonTextSTLS, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder, SingleTextLineSettings* Tip, string TipText = " ")
-	{
-		ButtonTextSTLS->SetNewPos(Xpos, Ypos);
-		this->STL = ButtonTextSTLS->CreateOne(ButtonText);
-		if (Tip)
-		{
-			Tip->SetNewPos(Xpos, Ypos - Height);
-			this->Tip = Tip->CreateOne(TipText);
-		}
-		else this->Tip = NULL;
-		this->BorderWidth = BorderWidth;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Width = Width;
-		this->Height = Height;
-		this->RGBAColor = ButtonTextSTLS->RGBAColor;
-		this->RGBABorder = RGBABorder;
-		this->RGBABackground = RGBABackground;
-		this->HoveredRGBAColor = HoveredRGBAColor;
-		this->HoveredRGBABorder = HoveredRGBABorder;
-		this->HoveredRGBABackground = HoveredRGBABackground;
-		this->Hovered = 0;
-		this->OnClick = OnClick;
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right, 0 move*/, CHAR State /*-1 down, 1 up*/)  override
-	{
-		Lock.lock();
-		mx = Xpos - mx;
-		my = Ypos - my;
-		if (Hovered)
-		{
-			if (fabsf(mx) > Width * 0.5 || fabsf(my) > Height * 0.5)
-			{
-				//cout << "UNHOVERED\n";
-				Hovered = 0;
-				STL->SafeColorChange(RGBAColor);
-			}
-			else
-			{
-				SetCursor(HandCursor);
-				if (Button && State == 1)
-				{
-
-					if (Button == -1 && OnClick)OnClick();
-					Lock.unlock();
-					return 1;
-				}
-
-			}
-		}
-		else
-		{
-			if (fabsf(mx) <= Width * 0.5 && fabsf(my) <= Height * 0.5)
-			{
-				Hovered = 1;
-				STL->SafeColorChange(HoveredRGBAColor);
-			}
-		}
-		Lock.unlock();
-		return 0;
-	}
-	void SafeMove(float dx, float dy)
-	{
-		Lock.lock();
-		if (Tip)Tip->SafeMove(dx, dy);
-		STL->SafeMove(dx, dy);
-		Xpos += dx;
-		Ypos += dy;
-		Lock.unlock();
-	}
-	void KeyboardHandler(char CH) override
-	{
-		return;
-	}
-	void SafeStringReplace(string NewString) override
-	{
-		Lock.lock();
-		this->STL->SafeStringReplace(NewString);
-		Lock.unlock();
-	}
-	void SafeChangePosition(float NewX, float NewY)
-	{
-		Lock.lock();
-		NewX -= Xpos;
-		NewY -= Ypos;
-		SafeMove(NewX, NewY);
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY)
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * Width,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * Height;
-		SafeChangePosition(NewX + CW, NewY + CH);
-		Lock.unlock();
-	}
-	void Draw()
-	{
-		Lock.lock();
-		if (Hovered)
-		{
-			if ((BYTE)HoveredRGBABackground)
-			{
-				GLCOLOR(HoveredRGBABackground);
-				glBegin(GL_QUADS);
-				glVertex2f(Xpos - Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos - 0.5f * Height);
-				glVertex2f(Xpos - Width * 0.5f, Ypos - 0.5f * Height);
-				glEnd();
-			}
-			if ((BYTE)HoveredRGBABorder)
-			{
-				GLCOLOR(HoveredRGBABorder);
-				glLineWidth(BorderWidth);
-				glBegin(GL_LINE_LOOP);
-				glVertex2f(Xpos - Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos - 0.5f * Height);
-				glVertex2f(Xpos - Width * 0.5f, Ypos - 0.5f * Height);
-				glEnd();
-			}
-		}
-		else
-		{
-			if ((BYTE)RGBABackground)
-			{
-				GLCOLOR(RGBABackground);
-				glBegin(GL_QUADS);
-				glVertex2f(Xpos - Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos - 0.5f * Height);
-				glVertex2f(Xpos - Width * 0.5f, Ypos - 0.5f * Height);
-				glEnd();
-			}
-			if ((BYTE)RGBABorder)
-			{
-				GLCOLOR(RGBABorder);
-				glLineWidth(BorderWidth);
-				glBegin(GL_LINE_LOOP);
-				glVertex2f(Xpos - Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos + 0.5f * Height);
-				glVertex2f(Xpos + Width * 0.5f, Ypos - 0.5f * Height);
-				glVertex2f(Xpos - Width * 0.5f, Ypos - 0.5f * Height);
-				glEnd();
-			}
-		}
-		if (Tip && Hovered)Tip->Draw();
-		STL->Draw();
-		Lock.unlock();
-	}
-	inline DWORD TellType() override
-	{
-		return TT_BUTTON;
-	}
-};
-
-struct ButtonSettings
-{
-	string ButtonText, TipText;
-	void(*OnClick)();
-	float Xpos, Ypos, Width, Height, CharHeight;
-	DWORD RGBAColor, gRGBAColor, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder;
-	BYTE BasePoint, GradPoint, BorderWidth;
-	BIT STLSBasedSettings;
-	SingleTextLineSettings* Tip, * STLS;
-	ButtonSettings(string ButtonText, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, DWORD gRGBAColor, BYTE BasePoint, BYTE GradPoint, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder, SingleTextLineSettings* Tip, string TipText)
-	{
-		this->STLSBasedSettings = 0;
-		this->ButtonText = ButtonText;
-		this->TipText = TipText;
-		this->OnClick = OnClick;
-		this->Tip = Tip;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Width = Width;
-		this->Height = Height;
-		this->CharHeight = CharHeight;
-		this->RGBAColor = RGBAColor;
-		this->gRGBAColor = gRGBAColor;
-		this->BasePoint = BasePoint;
-		this->GradPoint = GradPoint;
-		this->BorderWidth = BorderWidth;
-		this->RGBABackground = RGBABackground;
-		this->RGBABorder = RGBABorder;
-		this->HoveredRGBABackground = HoveredRGBABackground;
-		this->HoveredRGBABorder = HoveredRGBABorder;
-	}
-	ButtonSettings(string ButtonText, SingleTextLineSettings* ButtonTextSTLS, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder, SingleTextLineSettings* Tip, string TipText = " ")
-	{
-		this->STLSBasedSettings = 1;
-		this->ButtonText = ButtonText;
-		this->TipText = TipText;
-		this->OnClick = OnClick;
-		this->Tip = Tip;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Width = Width;
-		this->Height = Height;
-		this->STLS = ButtonTextSTLS;
-		this->BorderWidth = BorderWidth;
-		this->RGBAColor = ButtonTextSTLS->RGBAColor;
-		this->RGBABackground = RGBABackground;
-		this->RGBABorder = RGBABorder;
-		this->HoveredRGBAColor = HoveredRGBAColor;
-		this->HoveredRGBABackground = HoveredRGBABackground;
-		this->HoveredRGBABorder = HoveredRGBABorder;
-	}
-	ButtonSettings(string ButtonText, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder, SingleTextLineSettings* Tip, string TipText) :ButtonSettings(ButtonText, OnClick, Xpos, Ypos, Width, Height, CharHeight, RGBAColor, 0, 15, 15, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, Tip, TipText) {}
-	ButtonSettings(string ButtonText, SingleTextLineSettings* ButtonTextSTLS, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(ButtonText, ButtonTextSTLS, OnClick, Xpos, Ypos, Width, Height, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-	ButtonSettings(string ButtonText, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(ButtonText, OnClick, Xpos, Ypos, Width, Height, CharHeight, RGBAColor, 0, 15, 15, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-
-	ButtonSettings(SingleTextLineSettings* ButtonTextSTLS, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(" ", ButtonTextSTLS, OnClick, Xpos, Ypos, Width, Height, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-	ButtonSettings(string ButtonText, void(*OnClick)(), float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, DWORD gRGBAColor, BYTE BasePoint, BYTE GradPoint, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(ButtonText, OnClick, Xpos, Ypos, Width, Height, CharHeight, RGBAColor, gRGBAColor, BasePoint, GradPoint, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-	ButtonSettings(SingleTextLineSettings* ButtonTextSTLS, float Xpos, float Ypos, float Width, float Height, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(" ", ButtonTextSTLS, NULL, Xpos, Ypos, Width, Height, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-	ButtonSettings(float Xpos, float Ypos, float Width, float Height, float CharHeight, DWORD RGBAColor, BYTE BorderWidth, DWORD RGBABackground, DWORD RGBABorder, DWORD HoveredRGBAColor, DWORD HoveredRGBABackground, DWORD HoveredRGBABorder) :ButtonSettings(" ", NULL, Xpos, Ypos, Width, Height, CharHeight, RGBAColor, 0, 15, 15, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, NULL, " ") {}
-	ButtonSettings(Button* Example, BIT KeepText = false)
-	{
-		this->STLSBasedSettings = 1;
-		this->ButtonText = (KeepText) ? Example->STL->_CurrentText : " ";
-		if (!this->ButtonText.size())this->ButtonText = " ";
-		if (Example->Tip)
-		{
-			this->Tip = Tip;
-			if (TipText.size())
-				this->TipText = TipText;
-			else
-				this->TipText = " ";
-		}
-		else
-		{
-			this->TipText = " ";
-			this->Tip = NULL;
-		}
-		this->OnClick = Example->OnClick;
-		this->Xpos = Example->Xpos;
-		this->Ypos = Example->Ypos;
-		this->Width = Example->Width;
-		this->Height = Example->Height;
-		this->HoveredRGBAColor = Example->HoveredRGBAColor;
-		this->RGBAColor = Example->RGBAColor;
-		this->STLS = new SingleTextLineSettings(Example->STL);
-		this->gRGBAColor = this->STLS->gRGBAColor;
-		this->BorderWidth = Example->BorderWidth;
-		this->RGBABackground = Example->RGBABackground;
-		this->RGBABorder = Example->RGBABorder;
-		this->HoveredRGBABackground = Example->HoveredRGBABackground;
-		this->HoveredRGBABorder = Example->HoveredRGBABorder;
-	}
-	void Move(float dx, float dy)
-	{
-		Xpos += dx;
-		Ypos += dy;
-	}
-	void ChangePosition(float NewX, float NewY)
-	{
-		NewX -= Xpos;
-		NewY -= Ypos;
-		Move(NewX, NewY);
-	}
-	Button* CreateOne(string ButtonText, BIT KeepText = false)
-	{
-		if (STLS && STLSBasedSettings)
-			return new Button(((KeepText) ? this->ButtonText : ButtonText), STLS, OnClick, Xpos, Ypos, Width, Height, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, Tip, TipText);
-		else
-			return new Button(((KeepText) ? this->ButtonText : ButtonText), OnClick, Xpos, Ypos, Width, Height, CharHeight, RGBAColor, gRGBAColor, BasePoint, GradPoint, BorderWidth, RGBABackground, RGBABorder, HoveredRGBAColor, HoveredRGBABackground, HoveredRGBABorder, Tip, TipText);
-	}
-};
-
-struct TextBox : HandleableUIPart
-{
-	enum class VerticalOverflow { cut, display, recalibrate };
-	_Align TextAlign;
-	VerticalOverflow VOverflow;
-	string Text;
-	vector<SingleTextLine*> Lines;
-	float Xpos, Ypos;
-	float Width, Height;
-	float VerticalOffset, CalculatedTextHeight;
-	SingleTextLineSettings* STLS;
-	BYTE BorderWidth;
-	DWORD RGBABorder, RGBABackground, SymbolsPerLine;
-	~TextBox()
-	{
-		Lock.lock();
-		for (auto i = Lines.begin(); i != Lines.end(); i++)
-			if (*i)delete* i;
-		Lines.clear();
-		Lock.unlock();
-	}
-	TextBox(string Text, SingleTextLineSettings* STLS, float Xpos, float Ypos, float Height, float Width, float VerticalOffset, DWORD RGBABackground, DWORD RGBABorder, BYTE BorderWidth, _Align TextAlign = _Align::left, VerticalOverflow VOverflow = VerticalOverflow::cut)
-	{
-		this->TextAlign = TextAlign;
-		this->VOverflow = VOverflow;
-		this->BorderWidth = BorderWidth;
-		this->VerticalOffset = VerticalOffset;
-		this->STLS = STLS;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->Width = Width;
-		this->RGBABorder = RGBABorder;
-		this->RGBABackground = RGBABackground;
-		this->Height = Height;
-		this->Text = (Text.size()) ? Text : " ";
-		RecalculateAvailableSpaceForText();
-		TextReformat();
-	}
-	void TextReformat()
-	{
-		Lock.lock();
-		vector<vector<string>>SplittedText;
-		vector<string> Paragraph;
-		string Line;
-		STLS->SetNewPos(Xpos, Ypos + 0.5f * Height + 0.5f * VerticalOffset);
-		////OOOOOF... Someone help me with these please :d
-		for (int i = 0; i < Text.size(); i++)
-		{
-			if (Text[i] == ' ')
-			{
-				Paragraph.push_back(Line);
-				Line.clear();
-			}
-			else if (Text[i] == '\n')
-			{
-				Paragraph.push_back(Line);
-				Line.clear();
-				SplittedText.push_back(Paragraph);
-				Paragraph.clear();
-			}
-			else Line.push_back(Text[i]);
-			if (i == Text.size() - 1)
-			{
-				Paragraph.push_back(Line);
-				SplittedText.push_back(Paragraph);
-				Line.clear();
-				Paragraph.clear();
-			}
-		}
-		for (int i = 0; i < SplittedText.size(); i++)
-		{
-#define Para SplittedText[i]
-#define LINES Paragraph
-			for (int q = 0; q < Para.size(); q++)
-			{
-				if ((Para[q].size() + 1 + Line.size()) < SymbolsPerLine)
-					if (Line.size())Line = (Line + " " + Para[q]);
-					else Line = Para[q];
-				else
-				{
-					if (Line.size())LINES.push_back(Line);
-					Line = Para[q];
-				}
-				while (Line.size() >= SymbolsPerLine)
-				{
-					Paragraph.push_back(Line.substr(0, SymbolsPerLine));
-					Line = Line.erase(0, SymbolsPerLine);
-				}
-			}
-			Paragraph.push_back(Line);
-			Line.clear();
-#undef LINES	
-#undef Para
-		}
-		for (int i = 0; i < Paragraph.size(); i++)
-		{
-			STLS->Move(0, 0 - VerticalOffset);
-			//cout << Paragraph[i] << endl;
-			if (VOverflow == VerticalOverflow::cut && STLS->CYpos < Ypos - Height)break;
-			Lines.push_back(STLS->CreateOne(Paragraph[i]));
-			if (TextAlign == _Align::right)Lines.back()->SafeChangePosition_Argumented(GLOBAL_RIGHT, ((this->Xpos) + (0.5f * Width) - this->STLS->XUnitSize), Lines.back()->CYpos);
-			else if (TextAlign == _Align::left)Lines.back()->SafeChangePosition_Argumented(GLOBAL_LEFT, ((this->Xpos) - (0.5f * Width) + this->STLS->XUnitSize), Lines.back()->CYpos);
-		}
-		CalculatedTextHeight = (Lines.front()->CYpos - Lines.back()->CYpos) + Lines.front()->CalculatedHeight;
-		if (VOverflow == VerticalOverflow::recalibrate)
-		{
-			float dy = (CalculatedTextHeight - this->Height);
-			for (auto Y = Lines.begin(); Y != Lines.end(); Y++)
-			{
-				(*Y)->SafeMove(0, (dy + Lines.front()->CalculatedHeight) * 0.5f);
-			}
-		}
-		Lock.unlock();
-	}
-	void SafeTextColorChange(DWORD NewColor)
-	{
-		Lock.lock();
-		for (auto i = Lines.begin(); i != Lines.end(); i++)
-		{
-			(*i)->SafeColorChange(NewColor);
-		}
-		Lock.unlock();
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right, 0 move*/, CHAR State /*-1 down, 1 up*/)  override
-	{
-		return 0;
-	}
-	void SafeStringReplace(string NewString) override
-	{
-		Lock.lock();
-		this->Text = NewString;
-		Lines.clear();
-		RecalculateAvailableSpaceForText();
-		TextReformat();
-		Lock.unlock();
-	}
-	void KeyboardHandler(char CH)
-	{
-		return;
-	}
-	void RecalculateAvailableSpaceForText()
-	{
-		Lock.lock();
-		SymbolsPerLine = floor((Width + STLS->XUnitSize * 2) / (STLS->XUnitSize * 2 + STLS->SpaceWidth));
-		Lock.unlock();
-	}
-	void SafeMove(float dx, float dy)
-	{
-		Lock.lock();
-		Xpos += dx;
-		Ypos += dy;
-		STLS->Move(dx, dy);
-		for (int i = 0; i < Lines.size(); i++)
-		{
-			Lines[i]->SafeMove(dx, dy);
-		}
-		Lock.unlock();
-	}
-	void SafeChangePosition(float NewX, float NewY)
-	{
-		Lock.lock();
-		NewX -= Xpos;
-		NewY -= Ypos;
-		SafeMove(NewX, NewY);
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY)
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * Width,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * Height;
-		SafeChangePosition(NewX + CW, NewY + CH);
-		Lock.unlock();
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		if ((BYTE)RGBABackground)
-		{
-			GLCOLOR(RGBABackground);
-			glBegin(GL_QUADS);
-			glVertex2f(Xpos - (Width * 0.5f), Ypos + (0.5f * Height));
-			glVertex2f(Xpos + (Width * 0.5f), Ypos + (0.5f * Height));
-			glVertex2f(Xpos + (Width * 0.5f), Ypos - (0.5f * Height));
-			glVertex2f(Xpos - (Width * 0.5f), Ypos - (0.5f * Height));
-			glEnd();
-		}
-		if ((BYTE)RGBABorder)
-		{
-			GLCOLOR(RGBABorder);
-			glLineWidth(BorderWidth);
-			glBegin(GL_LINE_LOOP);
-			glVertex2f(Xpos - (Width * 0.5f), Ypos + (0.5f * Height));
-			glVertex2f(Xpos + (Width * 0.5f), Ypos + (0.5f * Height));
-			glVertex2f(Xpos + (Width * 0.5f), Ypos - (0.5f * Height));
-			glVertex2f(Xpos - (Width * 0.5f), Ypos - (0.5f * Height));
-			glEnd();
-		}
-		for (int i = 0; i < Lines.size(); i++) Lines[i]->Draw();
-		Lock.unlock();
-	}
-	inline DWORD TellType() override
-	{
-		return TT_TEXTBOX;
-	}
-};
-
-#define ARROW_STICK_HEIGHT 10
-struct SelectablePropertedList : HandleableUIPart
-{
-	_Align TextInButtonsAlign;
-	void(*OnSelect)(int ID);
-	void(*OnGetProperties)(int ID);
-	float HeaderCXPos, HeaderYPos, CalculatedHeight, SpaceBetween, Width;
-	ButtonSettings* ButtSettings;
-	deque<string> SelectorsText;
-	deque<Button*> Selectors;
-	DWORD SelectedID;
-	DWORD MaxVisibleLines, CurrentTopLineID, MaxCharsInLine;
-	BYTE TopArrowHovered, BottomArrowHovered;
-	~SelectablePropertedList()
-	{
-		Lock.lock();
-		for (auto Y = Selectors.begin(); Y != Selectors.end(); Y++)
-			delete (*Y);
-		Lock.unlock();
-	}
-	SelectablePropertedList(ButtonSettings* ButtSettings, void(*OnSelect)(int SelectedID), void(*OnGetProperties)(int ID), float HeaderCXPos, float HeaderYPos, float Width, float SpaceBetween, DWORD MaxCharsInLine = 0, DWORD MaxVisibleLines = 0, _Align TextInButtonsAlign = _Align::left)
-	{
-		this->MaxCharsInLine = MaxCharsInLine;
-		this->MaxVisibleLines = MaxVisibleLines;
-		this->ButtSettings = ButtSettings;
-		this->OnSelect = OnSelect;
-		this->OnGetProperties = OnGetProperties;
-		this->HeaderCXPos = HeaderCXPos;
-		this->Width = Width;
-		this->SpaceBetween = SpaceBetween;
-		this->HeaderCXPos = HeaderCXPos;
-		this->HeaderYPos = HeaderYPos;
-		this->CurrentTopLineID = 0;
-		this->TextInButtonsAlign = TextInButtonsAlign;
-		SelectedID = 0xFFFFFFFF;
-	}
-	void RecalculateCurrentHeight()
-	{
-		Lock.lock();
-		CalculatedHeight = SpaceBetween * Selectors.size();
-		Lock.unlock();
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right, 0 move*/, CHAR State /*-1 down, 1 up*/)  override
-	{
-		Lock.lock();
-		TopArrowHovered = BottomArrowHovered = 0;
-		if (fabsf(mx - HeaderCXPos) < 0.5 * Width && my < HeaderYPos && my > HeaderYPos - CalculatedHeight)
-		{
-			if (Button == 2 /*UP*/)
-			{
-				if (State == -1)
-				{
-					SafeRotateList(-3);
-				}
-			}
-			else if (Button == 3 /*DOWN*/)
-			{
-				if (State == -1)
-				{
-					SafeRotateList(3);
-				}
-			}
-		}
-		if (MaxVisibleLines && Selectors.size() < SelectorsText.size())
-		{
-			if (fabsf(mx - HeaderCXPos) < 0.5 * Width)
-			{
-				if (my > HeaderYPos && my < HeaderYPos + ARROW_STICK_HEIGHT)
-				{
-					TopArrowHovered = 1;
-					if (Button == -1 && State == -1)
-					{
-						SafeRotateList(-1);
-						Lock.unlock();
-						return 1;
-					}
-				}
-				else if (my < HeaderYPos - CalculatedHeight && my > HeaderYPos - CalculatedHeight - ARROW_STICK_HEIGHT)
-				{
-					BottomArrowHovered = 1;
-					if (Button == -1 && State == -1)
-					{
-						SafeRotateList(1);
-						Lock.unlock();
-						return 1;
-					}
-				}
-			}
-		}
-		if (Button)
-		{
-			BIT flag = 1;
-			for (int i = 0; i < Selectors.size(); i++)
-			{
-				if (Selectors[i]->MouseHandler(mx, my, Button, State) && flag)
-				{
-					if (Button == -1)
-					{
-						SelectedID = i + CurrentTopLineID;
-						if (OnSelect)OnSelect(i + CurrentTopLineID);
-					}
-					if (Button == 1)
-					{
-						//cout << "PROP\n";
-						if (OnGetProperties)OnGetProperties(i + CurrentTopLineID);
-					}
-					flag = 0;
-					Lock.unlock();
-					return 1;
-				}
-			}
-		}
-		else
-		{
-			for (int i = 0; i < Selectors.size(); i++)
-				Selectors[i]->MouseHandler(mx, my, 0, 0);
-		}
-		if (SelectedID < SelectorsText.size())
-			if (SelectedID >= CurrentTopLineID && SelectedID < CurrentTopLineID + MaxVisibleLines)
-				Selectors[SelectedID - CurrentTopLineID]->MouseHandler(Selectors[SelectedID - CurrentTopLineID]->Xpos, Selectors[SelectedID - CurrentTopLineID]->Ypos, 0, 0);
-		Lock.unlock();
-		return 0;
-	}
-	void SafeStringReplace(string NewString) override
-	{
-		Lock.lock();
-		this->SafeStringReplace(NewString, 0xFFFFFFFF);
-		Lock.unlock();
-	}
-	void SafeStringReplace(string NewString, DWORD LineID)
-	{
-		Lock.lock();
-		if (LineID == 0xFFFFFFFF)
-		{
-			SelectorsText[SelectedID] = NewString;
-			if (SelectedID < SelectorsText.size() && MaxVisibleLines)
-				if (SelectedID > CurrentTopLineID && SelectedID < CurrentTopLineID + MaxVisibleLines)
-					Selectors[SelectedID - CurrentTopLineID]->SafeStringReplace(NewString);
-		}
-		else
-		{
-			SelectorsText[LineID] = NewString;
-			if (LineID > CurrentTopLineID && LineID - CurrentTopLineID < MaxVisibleLines)
-				Selectors[LineID - CurrentTopLineID]->SafeStringReplace(NewString);
-		}
-		Lock.unlock();
-	}
-	void SafeUpdateLines()
-	{
-		Lock.lock();
-		while (SelectorsText.size() < Selectors.size())Selectors.pop_back();
-		if (CurrentTopLineID + MaxVisibleLines > SelectorsText.size())
-		{
-			if (SelectorsText.size() >= MaxVisibleLines)CurrentTopLineID = SelectorsText.size() - MaxVisibleLines;
-			else CurrentTopLineID = 0;
-		}
-		for (int i = 0; i < Selectors.size(); i++)
-			if (i + CurrentTopLineID < SelectorsText.size())
-				Selectors[i]->SafeStringReplace(
-					(MaxCharsInLine) ?
-					(SelectorsText[i + CurrentTopLineID].substr(0, MaxCharsInLine))
-					:
-					(SelectorsText[i + CurrentTopLineID])
-				);
-		ReSetAlign_All(TextInButtonsAlign);
-		Lock.unlock();
-	}
-	void SafeRotateList(INT32 Delta)
-	{
-		Lock.lock();
-		if (!MaxVisibleLines)
-		{
-			Lock.unlock(); return;
-		}
-		if (Delta < 0 && CurrentTopLineID < 0 - Delta)CurrentTopLineID = 0;
-		else if (Delta > 0 && CurrentTopLineID + Delta + MaxVisibleLines > SelectorsText.size())
-			CurrentTopLineID = SelectorsText.size() - MaxVisibleLines;
-		else CurrentTopLineID += Delta;
-		SafeUpdateLines();
-		Lock.unlock();
-	}
-	void SafeRemoveStringByID(DWORD ID)
-	{
-		Lock.lock();
-		if (ID >= SelectorsText.size())
-		{
-			Lock.unlock(); return;
-		}
-		if (SelectorsText.empty())
-		{
-			Lock.unlock(); return;
-		}
-		if (MaxVisibleLines)
-		{
-			if (ID < CurrentTopLineID)
-			{
-				CurrentTopLineID--;
-			}
-			else if (ID == CurrentTopLineID)
-			{
-				if (CurrentTopLineID == SelectorsText.size() - 1)CurrentTopLineID--;
-			}
-		}
-		SelectorsText.erase(SelectorsText.begin() + ID);
-		SafeUpdateLines();
-		SelectedID = 0xFFFFFFFF;
-		Lock.unlock();
-	}
-	void ReSetAlignFor(DWORD ID, _Align Align)
-	{
-		Lock.lock();
-		if (ID >= Selectors.size())
-		{
-			Lock.unlock(); return;
-		}
-		float nx = HeaderCXPos - ((Align == _Align::left) ? 0.5f : ((Align == _Align::right) ? 0 - 0.5f : 0)) * (Width - SpaceBetween);
-		Selectors[ID]->STL->SafeChangePosition_Argumented(Align, nx, Selectors[ID]->Ypos);
-		Lock.unlock();
-	}
-	void ReSetAlign_All(_Align Align)
-	{
-		Lock.lock();
-		if (!Align)
-		{
-			Lock.unlock(); return;
-		}
-		float nx = HeaderCXPos - ((Align == _Align::left) ? 0.5f : ((Align == _Align::right) ? 0 - 0.5f : 0)) * (Width - SpaceBetween);
-		for (int i = 0; i < Selectors.size(); i++)
-			Selectors[i]->STL->SafeChangePosition_Argumented(Align, nx, Selectors[i]->Ypos);
-		Lock.unlock();
-	}
-	void SafePushBackNewString(string ButtonText)
-	{
-		Lock.lock();
-		if (MaxCharsInLine)ButtonText = ButtonText.substr(0, MaxCharsInLine);
-		SelectorsText.push_back(ButtonText);
-		if (MaxVisibleLines && SelectorsText.size() > MaxVisibleLines)
-		{
-			SafeUpdateLines();
-			{
-				Lock.unlock(); return;
-			}
-		}
-		ButtSettings->ChangePosition(HeaderCXPos, HeaderYPos - (SelectorsText.size() - 0.5f) * SpaceBetween);
-		ButtSettings->Height = SpaceBetween;
-		ButtSettings->Width = Width;
-		ButtSettings->OnClick = NULL;
-		Button* ptr;
-		Selectors.push_back(ptr = ButtSettings->CreateOne(ButtonText));
-		//free(ptr);
-		RecalculateCurrentHeight();
-		ReSetAlignFor(SelectorsText.size() - 1, this->TextInButtonsAlign);
-		Lock.unlock();
-	}
-	void PushStrings(list<string> LStrings)
-	{
-		Lock.lock();
-		for (auto Y = LStrings.begin(); Y != LStrings.end(); Y++)
-			SafePushBackNewString(*Y);
-		Lock.unlock();
-	}
-	void PushStrings(vector<string> LStrings)
-	{
-		Lock.lock();
-		for (auto Y = LStrings.begin(); Y != LStrings.end(); Y++)
-			SafePushBackNewString(*Y);
-		Lock.unlock();
-	}
-	void PushStrings(initializer_list<string> LStrings)
-	{
-		Lock.lock();
-		for (auto Y = LStrings.begin(); Y != LStrings.end(); Y++)
-			SafePushBackNewString(*Y);
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY)
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * Width,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * CalculatedHeight;
-		SafeChangePosition(NewX + CW, NewY - 0.5f * CalculatedHeight + CH);
-		Lock.unlock();
-	}
-	void KeyboardHandler(CHAR CH) override
-	{
-		return;
-	}
-	void SafeChangePosition(float NewCXPos, float NewHeaderYPos) override
-	{
-		Lock.lock();
-		NewCXPos -= HeaderCXPos;
-		NewHeaderYPos -= HeaderYPos;
-		SafeMove(NewCXPos, NewHeaderYPos);
-		Lock.unlock();
-	}
-	void SafeMove(float dx, float dy) override
-	{
-		Lock.lock();
-		HeaderCXPos += dx;
-		HeaderYPos += dy;
-		for (auto Y = Selectors.begin(); Y != Selectors.end(); Y++)
-			(*Y)->SafeMove(dx, dy);
-		Lock.unlock();
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		if (Selectors.size() < SelectorsText.size())
-		{
-			///TOP BAR
-			if (TopArrowHovered)GLCOLOR(ButtSettings->HoveredRGBABorder);
-			else GLCOLOR(ButtSettings->RGBABorder);
-			glBegin(GL_QUADS);
-			glVertex2f(HeaderCXPos - 0.5f * Width, HeaderYPos);
-			glVertex2f(HeaderCXPos + 0.5f * Width, HeaderYPos);
-			glVertex2f(HeaderCXPos + 0.5f * Width, HeaderYPos + ARROW_STICK_HEIGHT);
-			glVertex2f(HeaderCXPos - 0.5f * Width, HeaderYPos + ARROW_STICK_HEIGHT);
-			///BOTTOM BAR
-			if (BottomArrowHovered)GLCOLOR(ButtSettings->HoveredRGBABorder);
-			else GLCOLOR(ButtSettings->RGBABorder);
-			glVertex2f(HeaderCXPos - 0.5f * Width, HeaderYPos - CalculatedHeight);
-			glVertex2f(HeaderCXPos + 0.5f * Width, HeaderYPos - CalculatedHeight);
-			glVertex2f(HeaderCXPos + 0.5f * Width, HeaderYPos - CalculatedHeight - ARROW_STICK_HEIGHT);
-			glVertex2f(HeaderCXPos - 0.5f * Width, HeaderYPos - CalculatedHeight - ARROW_STICK_HEIGHT);
-			glEnd();
-			///TOP ARROW
-			if (TopArrowHovered)
-				if (ButtSettings->HoveredRGBAColor & 0xFF)GLCOLOR(ButtSettings->HoveredRGBAColor);
-				else GLCOLOR(ButtSettings->RGBAColor);
-			else GLCOLOR(ButtSettings->RGBAColor);
-			glBegin(GL_TRIANGLES);
-			glVertex2f(HeaderCXPos, HeaderYPos + 9 * ARROW_STICK_HEIGHT / 10);
-			glVertex2f(HeaderCXPos + ARROW_STICK_HEIGHT * 0.5f, HeaderYPos + ARROW_STICK_HEIGHT / 10);
-			glVertex2f(HeaderCXPos - ARROW_STICK_HEIGHT * 0.5f, HeaderYPos + ARROW_STICK_HEIGHT / 10);
-			///BOTTOM ARROW
-			if (BottomArrowHovered)
-				if (ButtSettings->HoveredRGBAColor & 0xFF)GLCOLOR(ButtSettings->HoveredRGBAColor);
-				else GLCOLOR(ButtSettings->RGBAColor);
-			else GLCOLOR(ButtSettings->RGBAColor);
-			glVertex2f(HeaderCXPos, HeaderYPos - CalculatedHeight - 9 * ARROW_STICK_HEIGHT / 10);
-			glVertex2f(HeaderCXPos + ARROW_STICK_HEIGHT * 0.5f, HeaderYPos - CalculatedHeight - ARROW_STICK_HEIGHT / 10);
-			glVertex2f(HeaderCXPos - ARROW_STICK_HEIGHT * 0.5f, HeaderYPos - CalculatedHeight - ARROW_STICK_HEIGHT / 10);
-			glEnd();
-		}
-		for (auto Y = Selectors.begin(); Y != Selectors.end(); Y++)
-			(*Y)->Draw();
-		Lock.unlock();
-	}
-	inline DWORD TellType() override
-	{
-		return TT_SELPROPLIST;
-	}
-};
-
-#define HTSQ2 (2)
-struct SpecialSigns
-{
-	static void DrawOK(float x, float y, float SZParam, DWORD RGBAColor, DWORD NOARGUMENT = 0)
-	{
-		GLCOLOR(RGBAColor);
-		glLineWidth(ceil(SZParam / 2));
-		glBegin(GL_LINE_STRIP);
-		glVertex2f(x - SZParam * 0.766f, y + SZParam * 0.916f);
-		glVertex2f(x - SZParam * 0.1f, y + SZParam * 0.25f);
-		glVertex2f(x + SZParam * 0.9f, y + SZParam * 1.25f);
-		glEnd();
-		glPointSize(ceil(SZParam / 2));
-		glBegin(GL_POINTS);
-		glVertex2f(x - SZParam * 0.1f, y + SZParam * 0.25f);
-		glEnd();
-	}
-	static void DrawExTriangle(float x, float y, float SZParam, DWORD RGBAColor, DWORD SecondaryRGBAColor)
-	{
-		GLCOLOR(RGBAColor);
-		glBegin(GL_TRIANGLES);
-		glVertex2f(x, y + HTSQ2 * SZParam);
-		glVertex2f(x - SZParam, y);
-		glVertex2f(x + SZParam, y);
-		glEnd();
-		GLCOLOR(SecondaryRGBAColor);
-		glLineWidth(ceil(SZParam / 8));
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(x, y + HTSQ2 * SZParam);
-		glVertex2f(x - SZParam, y);
-		glVertex2f(x + SZParam, y);
-		glEnd();
-		glLineWidth(ceil(SZParam / 4));
-		glBegin(GL_LINES);
-		glVertex2f(x, y + SZParam * 0.6f);
-		glVertex2f(x, y + SZParam * 1.40f);
-		glVertex2f(x, y + SZParam * 0.2f);
-		glVertex2f(x, y + SZParam * 0.4f);
-		glEnd();
-	}
-	static void DrawFileSign(float x, float y, float SZParam, DWORD RGBAColor, DWORD SecondaryRGBAColor)
-	{
-		GLCOLOR(RGBAColor);
-		glLineWidth(ceil(SZParam / 5));
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(x, y + SZParam);
-		glVertex2f(x - SZParam, y);
-		glVertex2f(x - SZParam, y - SZParam);
-		glVertex2f(x + SZParam, y - SZParam);
-		glVertex2f(x + SZParam, y + SZParam);
-		glEnd();
-		glBegin(GL_LINES);
-		glVertex2f(x, y + SZParam);
-		glVertex2f(x, y);
-		glVertex2f(x, y);
-		glVertex2f(x - SZParam, y);
-		glEnd();
-		glPointSize(ceil(SZParam / 5));
-		glBegin(GL_POINTS);
-		glVertex2f(x, y);
-		glVertex2f(x, y + SZParam);
-		glVertex2f(x - SZParam, y);
-		glVertex2f(x - SZParam, y - SZParam);
-		glVertex2f(x + SZParam, y - SZParam);
-		glVertex2f(x + SZParam, y + SZParam);
-		glEnd();
-	}
-	static void DrawACircle(float x, float y, float SZParam, DWORD RGBAColor, DWORD SecondaryRGBAColor)
-	{
-		GLCOLOR(SecondaryRGBAColor);
-		glBegin(GL_POLYGON);
-		for (float a = -90; a < 270; a += 5)
-			glVertex2f(SZParam * 1.25f * (cos(ANGTORAD(a))) + x, SZParam * 1.25f * (sin(ANGTORAD(a))) + y + SZParam * 0.75f);
-		glEnd();
-		GLCOLOR(RGBAColor);
-		glLineWidth(ceil(SZParam / 10));
-		glBegin(GL_LINE_LOOP);
-		for (float a = -90; a < 270; a += 5)
-			glVertex2f(SZParam * 1.25f * (cos(ANGTORAD(a))) + x, SZParam * 1.25f * (sin(ANGTORAD(a))) + y + SZParam * 0.75f);
-		glEnd();
-	}
-	static void DrawNo(float x, float y, float SZParam, DWORD RGBAColor, DWORD NOARGUMENT = 0)
-	{
-		GLCOLOR(RGBAColor);
-		glLineWidth(ceil(SZParam / 2));
-		glBegin(GL_LINES);
-		glVertex2f(x - SZParam * 0.5f, y + SZParam * 0.25f);
-		glVertex2f(x + SZParam * 0.5f, y + SZParam * 1.25f);
-		glVertex2f(x + SZParam * 0.5f, y + SZParam * 0.25f);
-		glVertex2f(x - SZParam * 0.5f, y + SZParam * 1.25f);
-		glEnd();
-	}
-	static void DrawWait(float x, float y, float SZParam, DWORD RGBAColor, DWORD TotalStages)
-	{
-		float Start = ((float)((TimerV % TotalStages) * 360)) / (float)(TotalStages), t;
-		BYTE R = (RGBAColor >> 24), G = (RGBAColor >> 16) & 0xFF, B = (RGBAColor >> 8) & 0xFF, A = (RGBAColor) & 0xFF;
-		//printf("%x\n", CurStage_TotalStages);
-		glLineWidth(ceil(SZParam / 1.5f));
-		glBegin(GL_LINES);
-		for (float a = 0; a < 360.5f; a += (180.f / (TotalStages)))
-		{
-			t = a / 360.f;
-			glColor4ub(
-				255 * (t)+R * (1 - t),
-				255 * (t)+G * (1 - t),
-				255 * (t)+B * (1 - t),
-				255 * (t)+A * (1 - t)
-			);
-			glVertex2f(SZParam * 1.25f * (cos(ANGTORAD(a + Start))) + x, SZParam * 1.25f * (sin(ANGTORAD(a + Start))) + y + SZParam * 0.75f);
-		}
-		glEnd();
-	}
-};
-
-struct SpecialSignHandler : HandleableUIPart
-{
-	float x, y, SZParam;
-	DWORD FRGBA, SRGBA;
-	void(*DrawFunc)(float, float, float, DWORD, DWORD);
-	SpecialSignHandler(void(*DrawFunc)(float, float, float, DWORD, DWORD), float x, float y, float SZParam, DWORD FRGBA, DWORD SRGBA)
-	{
-		this->DrawFunc = DrawFunc;
-		this->x = x;
-		this->y = y;
-		this->SZParam = SZParam;
-		this->FRGBA = FRGBA;
-		this->SRGBA = SRGBA;
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		if (this->DrawFunc)this->DrawFunc(x, y, SZParam, FRGBA, SRGBA);
-		Lock.unlock();
-	}
-	void SafeMove(float dx, float dy) override
-	{
-		Lock.lock();
-		x += dx;
-		y += dy;
-		Lock.unlock();
-	}
-	void SafeChangePosition(float NewX, float NewY) override
-	{
-		Lock.lock();
-		x = NewX;
-		y = NewY;
-		Lock.unlock();
-	}
-	void _ReplaceVoidFunc(void(*NewDrawFunc)(float, float, float, DWORD, DWORD))
-	{
-		Lock.lock();
-		this->DrawFunc = NewDrawFunc;
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override
-	{
-
-	}
-	void KeyboardHandler(CHAR CH) override
-	{
-		return;
-	}
-	void SafeStringReplace(string Meaningless) override
-	{
-		return;
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
-	{
-		return 0;
-	}
-};
-
-struct WheelVariableChanger :HandleableUIPart
-{
-	enum class Type { exponential, linear };
-	enum class Sensitivity { on_enter, on_click, on_wheel };
-	Type type;
-	Sensitivity Sen;
-	InputField* var_if, * fac_if;
-	float Width, Height;
-	float Xpos, Ypos;
-	string var_s, fact_s;
-	double variable;
-	double factor;
-	bool IsHovered, WheelFieldHovered;
-	void(*OnApply)(double);
-	~WheelVariableChanger()
-	{
-		if (var_if)
-			delete var_if;
-		if (var_if)
-			delete fac_if;
-	}
-	WheelVariableChanger(void(*OnApply)(double), float Xpos, float Ypos, double default_var, double default_fact, SingleTextLineSettings* STLS, string var_string = " ", string fac_string = " ", Type type = Type::exponential) : Width(100), Height(50)
-	{
-		this->OnApply = OnApply;
-		this->Xpos = Xpos;
-		this->Ypos = Ypos;
-		this->variable = default_var;
-		this->factor = default_fact;
-		this->IsHovered = WheelFieldHovered = false;
-		this->type = type;
-		this->Sen = Sensitivity::on_wheel;
-		var_if = new InputField(to_string(default_var).substr(0, 8), Xpos - 25., Ypos + 15, 10, 40, STLS, nullptr, 0x007FFFFF, STLS, var_string, 8, _Align::center, _Align::center, InputField::Type::FP_PositiveNumbers);
-		fac_if = new InputField(to_string(default_fact).substr(0, 8), Xpos - 25., Ypos - 5, 10, 40, STLS, nullptr, 0x007FFFFF, STLS, fac_string, 8, _Align::center, _Align::center, InputField::Type::FP_PositiveNumbers);
-	}
-	void Draw() override
-	{
-		GLCOLOR(0xFFFFFF3F + WheelFieldHovered * 0x3F);
-		glBegin(GL_QUADS);
-		glVertex2f(Xpos, Ypos + 25);
-		glVertex2f(Xpos, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos + 25);
-		glEnd();
-		GLCOLOR((0x007FFF3F + WheelFieldHovered * 0x3F));
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(Xpos, Ypos + 25);
-		glVertex2f(Xpos, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos + 25);
-		glEnd();
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(Xpos - 50, Ypos + 25);
-		glVertex2f(Xpos - 50, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos - 25);
-		glVertex2f(Xpos + 50, Ypos + 25);
-		glEnd();
-		var_if->Draw();
-		fac_if->Draw();
-	}
-	void SafeMove(float dx, float dy) override
-	{
-		Xpos += dx;
-		Ypos += dy;
-		var_if->SafeMove(dx, dy);
-		fac_if->SafeMove(dx, dy);
-	}
-	void SafeChangePosition(float NewX, float NewY) override
-	{
-		NewX -= Xpos;
-		NewY -= Ypos;
-		SafeMove(NewX, NewY);
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override
-	{
-		float CW = 0.5f * (
-			(INT32)((BIT)(GLOBAL_LEFT & Arg))
-			- (INT32)((BIT)(GLOBAL_RIGHT & Arg))
-			) * Width,
-			CH = 0.5f * (
-				(INT32)((BIT)(GLOBAL_BOTTOM & Arg))
-				- (INT32)((BIT)(GLOBAL_TOP & Arg))
-				) * Height;
-		SafeChangePosition(NewX + CW, NewY + CH);
-	}
-	void CheckupInputs()
-	{
-		variable = stod(var_if->STL->_CurrentText);
-		factor = stod(fac_if->STL->_CurrentText);
-	}
-	void KeyboardHandler(CHAR CH) override
-	{
-		fac_if->KeyboardHandler(CH);
-		var_if->KeyboardHandler(CH);
-		if (IsHovered)
-		{
-			if (CH == 13)
-			{
-				CheckupInputs();
-				if (OnApply)
-					OnApply(variable);
-			}
-		}
-	}
-	void SafeStringReplace(string Meaningless) override
-	{
-
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
-	{
-		this->fac_if->MouseHandler(mx, my, Button, State);
-		this->var_if->MouseHandler(mx, my, Button, State);
-		mx -= Xpos;
-		my -= Ypos;
-		if (fabsf(mx) < Width * 0.5 && fabsf(my) < Height * 0.5)
-		{
-			IsHovered = true;
-			if (mx >= 0 && mx <= Width * 0.5 && fabsf(my) < Height * 0.5)
-			{
-				if (Sen == Sensitivity::on_click && State == 1)
-					if (OnApply)
-						OnApply(variable);
-				WheelFieldHovered = true;
-				if (Button)
-				{
-					CheckupInputs();
-					if (Button == 2 /*UP*/)
-					{
-						if (State == -1)
-						{
-							switch (type)
-							{
-								case WheelVariableChanger::Type::exponential: { variable *= factor; break; }
-								case WheelVariableChanger::Type::linear: { variable += factor;	break; }
-							}
-							var_if->UpdateInputString(to_string(variable));
-							if (Sen == Sensitivity::on_wheel)
-								if (OnApply)
-									OnApply(variable);
-						}
-					}
-					else if (Button == 3 /*DOWN*/)
-					{
-						if (State == -1)
-						{
-							switch (type)
-							{
-								case WheelVariableChanger::Type::exponential: { variable /= factor; break; }
-								case WheelVariableChanger::Type::linear: { variable -= factor;	break; }
-							}
-							var_if->UpdateInputString(to_string(variable));
-							if (Sen == Sensitivity::on_wheel)
-								if (OnApply)
-									OnApply(variable);
-						}
-					}
-				}
-			}
-		}
-		else
-		{
-			IsHovered = false;
-			WheelFieldHovered = false;
-		}
-		return 0;
-	}
-	void ForceUpdateValue(BIT Up)
-	{
-		MouseHandler(Xpos, Ypos, 3 - Up, -1);
-	}
-};
-
-#define WindowHeapSize 15
-struct MoveableWindow :HandleableUIPart
-{
-	float XWindowPos, YWindowPos;//leftup corner coordinates
-	float Width, Height;
-	DWORD RGBABackground, RGBAThemeColor, RGBAGradBackground;
-	SingleTextLine* WindowName;
-	map<string, HandleableUIPart*> WindowActivities;
-	BIT Drawable;
-	BIT HoveredCloseButton;
-	BIT CursorFollowMode;
-	BIT HUIP_MapWasChanged;
-	float PCurX, PCurY;
-	~MoveableWindow()
-	{
-		Lock.lock();
-		delete WindowName;
-		for (auto i = WindowActivities.begin(); i != WindowActivities.end(); i++)
-			delete i->second;
-		WindowActivities.clear();
-		Lock.unlock();
-	}
-	MoveableWindow(string WindowName, SingleTextLineSettings* WindowNameSettings, float XPos, float YPos, float Width, float Height, DWORD RGBABackground, DWORD RGBAThemeColor, DWORD RGBAGradBackground = 0)
-	{
-		if (WindowNameSettings)
-		{
-			WindowNameSettings->SetNewPos(XPos, YPos);
-			this->WindowName = WindowNameSettings->CreateOne(WindowName);
-			this->WindowName->SafeMove(this->WindowName->CalculatedWidth * 0.5 + WindowHeapSize * 0.5f, 0 - WindowHeapSize * 0.5f);
-		}
-		this->HUIP_MapWasChanged = false;
-		this->XWindowPos = XPos;
-		this->YWindowPos = YPos;
-		this->Width = Width;
-		this->Height = (Height < WindowHeapSize) ? WindowHeapSize : Height;
-		this->RGBABackground = RGBABackground;
-		this->RGBAThemeColor = RGBAThemeColor;
-		this->RGBAGradBackground = RGBAGradBackground;
-		this->CursorFollowMode = 0;
-		this->HoveredCloseButton = 0;
-		this->Drawable = 1;
-		this->PCurX = 0.;
-		this->PCurY = 0.;
-	}
-	void KeyboardHandler(char CH)
-	{
-		Lock.lock();
-		for (auto i = WindowActivities.begin(); i != WindowActivities.end(); i++)
-		{
-			i->second->KeyboardHandler(CH);
-			if (HUIP_MapWasChanged)
-			{
-				HUIP_MapWasChanged = false;
-				break;
-			}
-		}
-		Lock.unlock();
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button/*-1 left, 1 right, 0 move*/, CHAR State /*-1 down, 1 up*/) override
-	{
-		Lock.lock();
-		if (!Drawable)
-		{
-			Lock.unlock();
-			return 0;
-		}
-		HoveredCloseButton = 0;
-		if (mx > XWindowPos + Width - WindowHeapSize && mx < XWindowPos + Width && my < YWindowPos && my > YWindowPos - WindowHeapSize)
-		{///close button
-			if (Button && State == 1)
-			{
-				Drawable = 0;
-				CursorFollowMode = false;
-				Lock.unlock();
-				return 1;
-			}
-			else if (!Button)
-			{
-				HoveredCloseButton = 1;
-			}
-		}
-		else if (mx - XWindowPos < Width && mx - XWindowPos>0 && my<YWindowPos && my>YWindowPos - WindowHeapSize)
-		{
-			if (Button == -1)
-			{///window header
-				if (State == -1)
-				{
-					CursorFollowMode = !CursorFollowMode;
-					PCurX = mx;
-					PCurY = my;
-				}
-				else if (State == 1)
-				{
-					CursorFollowMode = !CursorFollowMode;
-				}
-			}
-		}
-		if (CursorFollowMode)
-		{
-			SafeMove(mx - PCurX, my - PCurY);
-			PCurX = mx;
-			PCurY = my;
-			Lock.unlock();
-			return 1;
-		}
-
-		BIT flag = 0;
-		auto Y = WindowActivities.begin();
-		while (Y != WindowActivities.end())
-		{
-			flag = Y->second->MouseHandler(mx, my, Button, State);
-			if (HUIP_MapWasChanged)
-			{
-				HUIP_MapWasChanged = false;
-				break;
-			}
-			Y++;
-		}
-
-		if (mx - XWindowPos < Width && mx - XWindowPos > 0 && YWindowPos - my > 0 && YWindowPos - my < Height)
-			if (Button)
-			{
-				Lock.unlock();
-				return 1;
-			}
-			else
-			{
-				Lock.unlock();
-				return flag;
-			}
-		else
-		{
-			Lock.unlock();
-			return flag;
-		}
-		//return 1;
-
-	}
-	void SafeChangePosition(float NewXpos, float NewYpos) override
-	{
-		Lock.lock();
-		NewXpos -= XWindowPos;
-		NewYpos -= YWindowPos;
-		SafeMove(NewXpos, NewYpos);
-		Lock.unlock();
-	}
-	BIT DeleteUIElementByName(string ElementName)
-	{
-		Lock.lock();
-		HUIP_MapWasChanged = true;
-		auto ptr = WindowActivities.find(ElementName);
-		if (ptr == WindowActivities.end())
-		{
-			Lock.unlock();
-			return 0;
-		}
-		auto deletable = ptr->second;
-		WindowActivities.erase(ElementName);
-		delete deletable;
-		Lock.unlock();
-		return 1;
-	}
-	BIT AddUIElement(string ElementName, HandleableUIPart* Elem)
-	{
-		Lock.lock();
-		HUIP_MapWasChanged = true;
-		auto ans = WindowActivities.insert_or_assign(ElementName, Elem);
-		Lock.unlock();
-		return ans.second;
-	}
-	void SafeMove(float dx, float dy) override
-	{
-		Lock.lock();
-		XWindowPos += dx;
-		YWindowPos += dy;
-		WindowName->SafeMove(dx, dy);
-		for (auto Y = WindowActivities.begin(); Y != WindowActivities.end(); Y++)
-			Y->second->SafeMove(dx, dy);
-		Lock.unlock();
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY)
-	{
-		Lock.lock();
-		float CW = 0.5f * (
-			(INT32)(!!(GLOBAL_LEFT & Arg))
-			- (INT32)(!!(GLOBAL_RIGHT & Arg))
-			- 1) * Width,
-			CH = 0.5f * (
-				(INT32)(!!(GLOBAL_BOTTOM & Arg))
-				- (INT32)(!!(GLOBAL_TOP & Arg))
-				+ 1) * Height;
-		SafeChangePosition(NewX + CW, NewY + CH);
-		Lock.unlock();
-	}
-	void Draw() override
-	{
-		Lock.lock();
-		if (!Drawable)
-		{
-			Lock.unlock();
-			return;
-		}
-		GLCOLOR(RGBABackground);
-		glBegin(GL_QUADS);
-		glVertex2f(XWindowPos, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos);
-		if (RGBAGradBackground)GLCOLOR(RGBAGradBackground);
-		glVertex2f(XWindowPos + Width, YWindowPos - Height);
-		glVertex2f(XWindowPos, YWindowPos - Height);
-		glEnd();
-		GLCOLOR(RGBAThemeColor);
-		glLineWidth(1);
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(XWindowPos, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos - Height);
-		glVertex2f(XWindowPos, YWindowPos - Height);
-		glEnd();
-		glBegin(GL_QUADS);
-		glVertex2f(XWindowPos, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos - WindowHeapSize);
-		glVertex2f(XWindowPos, YWindowPos - WindowHeapSize);
-		glColor4ub(255, 32 + 32 * HoveredCloseButton, 32 + 32 * HoveredCloseButton, 255);
-		glVertex2f(XWindowPos + Width, YWindowPos);
-		glVertex2f(XWindowPos + Width, YWindowPos + 1 - WindowHeapSize);
-		glVertex2f(XWindowPos + Width - WindowHeapSize, YWindowPos + 1 - WindowHeapSize);
-		glVertex2f(XWindowPos + Width - WindowHeapSize, YWindowPos);
-		glEnd();
-
-		if (WindowName)WindowName->Draw();
-
-		for (auto Y = WindowActivities.begin(); Y != WindowActivities.end(); Y++)
-			Y->second->Draw();
-		Lock.unlock();
-	}
-	void _NotSafeResize(float NewHeight, float NewWidth)
-	{
-		Lock.lock();
-		this->Height = NewHeight;
-		this->Width = NewWidth;
-		Lock.unlock();
-	}
-	void _NotSafeResize_Centered(float NewHeight, float NewWidth)
-	{
-		Lock.lock();
-		float dx, dy;
-		XWindowPos += (dx = -0.5f * (NewWidth - Width));
-		YWindowPos += (dy = 0.5f * (NewHeight - Height));
-		WindowName->SafeMove(dx, dy);
-		Width = NewWidth;
-		Height = NewHeight;
-		Lock.unlock();
-	}
-	void SafeStringReplace(string NewWindowTitle) override
-	{
-		Lock.lock();
-		SafeWindowRename(NewWindowTitle);
-		Lock.unlock();
-	}
-	void SafeWindowRename(string NewWindowTitle)
-	{
-		Lock.lock();
-		if (WindowName)
-		{
-			WindowName->SafeStringReplace(NewWindowTitle);
-			WindowName->SafeChangePosition_Argumented(GLOBAL_LEFT, XWindowPos + WindowHeapSize * 0.5f, WindowName->CYpos);
-		}
-		Lock.unlock();
-	}
-	HandleableUIPart*& operator[](string ID)
-	{
-		return WindowActivities[ID];
-	}
-	DWORD TellType()
-	{
-		return TT_MOVEABLE_WINDOW;
-	}
-};
-
-
-SingleTextLineSettings
-* _STLS_WhiteSmall = new SingleTextLineSettings("_", 0, 0, 5, 0xFFFFFFFF),
-* _STLS_BlackSmall = new SingleTextLineSettings("_", 0, 0, 5, 0x000000FF),
-
-* System_Black = (is_fonted) ? new SingleTextLineSettings(10, 0x000000FF) : new SingleTextLineSettings("_", 0, 0, 5, 0x000000FF),
-* System_White = (is_fonted) ? new SingleTextLineSettings(10, 0xFFFFFFFF) : new SingleTextLineSettings("_", 0, 0, 5, 0xFFFFFFFF);
-
-struct WindowsHandler
-{
-	map<string, MoveableWindow*> Map;
-#define Map(WindowName,ElementName) (*Map[WindowName])[ElementName]
-	list<map<string, MoveableWindow*>::iterator> ActiveWindows;
-	string MainWindow_ID, MW_ID_Holder;
-	BIT WindowWasDisabledDuringMouseHandling;
-	std::recursive_mutex locker;
-	WindowsHandler()
-	{
-		MW_ID_Holder = "";
-		MainWindow_ID = "MAIN";
-		WindowWasDisabledDuringMouseHandling = 0;
-		MoveableWindow* ptr;
-		Map["ALERT"] = ptr = new MoveableWindow("Alert window", System_White, -100, 25, 200, 50, 0x3F3F3FCF, 0x7F7F7F7F);
-		(*ptr)["AlertText"] = new TextBox("_", System_White, 17.5, -7.5, 37, 160, 7.5, 0, 0, 0, _Align::left, TextBox::VerticalOverflow::recalibrate);
-		(*ptr)["AlertSign"] = new SpecialSignHandler(SpecialSigns::DrawACircle, -80, -12.5, 7.5, 0x000000FF, 0x001FFFFF);
-
-		Map["PROMPT"] = ptr = new MoveableWindow("prompt", System_White, -50, 50, 100, 100, 0x3F3F3FCF, 0x7F7F7F7F);
-		(*ptr)["FLD"] = new InputField("", 0, 35 - WindowHeapSize, 10, 80, System_White, NULL, 0x007FFFFF, NULL, "", 0, _Align::center);
-		(*ptr)["TXT"] = new TextBox("_abc_", System_White, 0, 7.5 - WindowHeapSize, 10, 80, 7.5, 0, 0, 2, _Align::center, TextBox::VerticalOverflow::recalibrate);
-		(*ptr)["BUTT"] = new Button("Submit", System_White, NULL, -0, -20 - WindowHeapSize, 80, 10, 1, 0x007FFF3F, 0x007FFFFF, 0xFF7F00FF, 0xFFFFFFFF, 0xFF7F00FF, NULL, " ");
-	}
-	void MouseHandler(float mx, float my, CHAR Button, CHAR State)
-	{
-		locker.lock();
-		//printf("%X\n", Button);
-		list<map<string, MoveableWindow*>::iterator>::iterator AWIterator = ActiveWindows.begin(), CurrentAW;
-		CurrentAW = AWIterator;
-		BIT flag = 0;
-		if (!Button && !ActiveWindows.empty())(*ActiveWindows.begin())->second->MouseHandler(mx, my, 0, 0);
-		else
-		{
-			while (AWIterator != ActiveWindows.end() && !((*AWIterator)->second->MouseHandler(mx, my, Button, State)) && !WindowWasDisabledDuringMouseHandling)
-				AWIterator++;
-			if (!WindowWasDisabledDuringMouseHandling && ActiveWindows.size() > 1 && AWIterator != ActiveWindows.end() && AWIterator != ActiveWindows.begin())
-				if (CurrentAW == ActiveWindows.begin())EnableWindow(*AWIterator);
-			if (WindowWasDisabledDuringMouseHandling)
-				WindowWasDisabledDuringMouseHandling = 0;
-		}
-		locker.unlock();
-	}
-	void ThrowPrompt(string StaticTipText, string WindowTitle, void(*OnSubmit)(), _Align STipAlign, InputField::Type InputType, string DefaultString = "", DWORD MaxChars = 0)
-	{
-		locker.lock();
-		auto wptr = Map["PROMPT"];
-		auto ifptr = ((InputField*)(*wptr)["FLD"]);
-		auto tbptr = ((TextBox*)(*wptr)["TXT"]);
-		wptr->SafeWindowRename(WindowTitle);
-		ifptr->InputType = InputType;
-		ifptr->MaxChars = MaxChars;
-		ifptr->UpdateInputString(DefaultString);
-		tbptr->TextAlign = STipAlign;
-		tbptr->SafeStringReplace(StaticTipText);
-		((Button*)(*wptr)["BUTT"])->OnClick = OnSubmit;
-
-		wptr->SafeChangePosition(-50, 50);
-		EnableWindow("PROMPT");
-		locker.unlock();
-	}
-	void ThrowAlert(string AlertText, string AlertHeader, void(*SpecialSignsDrawFunc)(float, float, float, DWORD, DWORD), BIT Update = false, DWORD FRGBA = 0, DWORD SRGBA = 0)
-	{
-		locker.lock();
-		auto AlertWptr = Map["ALERT"];
-		AlertWptr->SafeWindowRename(AlertHeader);
-		AlertWptr->_NotSafeResize_Centered(50, 200);
-		AlertWptr->SafeChangePosition_Argumented(0, 0, 0);
-		TextBox* AlertWTptr = (TextBox*)((*AlertWptr)["AlertText"]);
-		AlertWTptr->SafeStringReplace(AlertText);
-		if (AlertWTptr->CalculatedTextHeight > AlertWTptr->Height)
-		{
-			AlertWptr->_NotSafeResize_Centered(AlertWTptr->CalculatedTextHeight + WindowHeapSize, AlertWptr->Width);
-		}
-		auto AlertWSptr = ((SpecialSignHandler*)(*AlertWptr)["AlertSign"]);
-		AlertWSptr->_ReplaceVoidFunc(SpecialSignsDrawFunc);
-		if (Update)
-		{
-			AlertWSptr->FRGBA = FRGBA;
-			AlertWSptr->SRGBA = SRGBA;
-		}
-		EnableWindow("ALERT");
-		locker.unlock();
-	}
-	void DisableWindow(string ID)
-	{
-		locker.lock();
-		auto Y = Map.find(ID);
-		if (Y != Map.end())
-		{
-			WindowWasDisabledDuringMouseHandling = 1;
-			Y->second->Drawable = 1;
-			ActiveWindows.remove(Y);
-		}
-		locker.unlock();
-	}
-	void DisableAllWindows()
-	{
-		locker.lock();
-		WindowWasDisabledDuringMouseHandling = 1;
-		ActiveWindows.clear();
-		EnableWindow(MainWindow_ID);
-		locker.unlock();
-	}
-	void TurnOnMainWindow()
-	{
-		locker.lock();
-		if (this->MW_ID_Holder != "")
-			swap(this->MainWindow_ID, this->MW_ID_Holder);
-		this->EnableWindow(MainWindow_ID);
-		locker.unlock();
-	}
-	void TurnOffMainWindow()
-	{
-		locker.lock();
-		if (this->MW_ID_Holder == "")
-			swap(this->MainWindow_ID, this->MW_ID_Holder);
-		this->DisableWindow(MainWindow_ID);
-		locker.unlock();
-	}
-	void DisableWindow(list<map<string, MoveableWindow*>::iterator>::iterator Window)
-	{
-		locker.lock();
-		if (Window == ActiveWindows.end())
-		{
-			locker.lock();
-			return;
-		}
-		WindowWasDisabledDuringMouseHandling = 1;
-		(*Window)->second->Drawable = 1;
-		ActiveWindows.erase(Window);
-		locker.unlock();
-	}
-	void EnableWindow(map<string, MoveableWindow*>::iterator Window)
-	{
-		locker.lock();
-		if (Window == Map.end())
-		{
-			locker.lock();
-			return;
-		}
-		for (auto Y = ActiveWindows.begin(), Q = ActiveWindows.begin(); Y != ActiveWindows.end(); Y++)
-		{
-			if (*Y == Window)
-			{
-				Window->second->Drawable = 1;
-				if (Y != ActiveWindows.begin())
-				{
-					Q = Y;
-					Q--;
-					ActiveWindows.erase(Y);
-					Y = Q;
-				}
-				else
-				{
-					ActiveWindows.erase(Y);
-					if (ActiveWindows.size())Y = ActiveWindows.begin();
-					else break;
-				}
-			}
-		}
-
-		ActiveWindows.push_front(Window);
-		locker.unlock();
-		//cout << Window->first << " " << ActiveWindows.front()->first << endl;
-	}
-	void EnableWindow(string ID)
-	{
-		locker.lock();
-		this->EnableWindow(Map.find(ID));
-		locker.unlock();
-	}
-	void KeyboardHandler(char CH)
-	{
-		locker.lock();
-		if (ActiveWindows.size())
-			(*(ActiveWindows.begin()))->second->KeyboardHandler(CH);
-		locker.unlock();
-	}
-	void Draw()
-	{
-		BIT MetMain = 0;
-		locker.lock();
-		if (!ActiveWindows.empty())
-		{//if only reverse iterators could be easily converted to usual iterators...
-			auto Y = (++ActiveWindows.rbegin()).base();
-
-			while (true)
-			{
-				//cout << ((*Y)->first) << endl;
-				if (!((*Y)->second->Drawable))
-				{
-					if ((*Y)->first != MainWindow_ID)
-						if (Y == ActiveWindows.begin())
-						{
-							DisableWindow(Y);
-							break;
-						}
-						else DisableWindow(Y);
-					else (*Y)->second->Drawable = true;
-					continue;
-				}
-				(*Y)->second->Draw();
-				if ((*Y)->first == MainWindow_ID)MetMain = 1;
-				if (Y == ActiveWindows.begin())break;
-				Y--;
-			}
-		}
-		//cout << endl;
-		if (!MetMain)this->EnableWindow(MainWindow_ID);
-		locker.unlock();
-	}
-	inline MoveableWindow*& operator[](string ID)
-	{
-		return (this->Map[ID]);
-	}
-};
-WindowsHandler* WH;
-
-//////////////////////////////
-////TRUE USAGE STARTS HERE////
-//////////////////////////////
-
-#include "grav_eq_iterator.h"
-//#include "buddhabrot.h"
-
-// omg, this is so stupid, but that's like 5 year old legacy code, so I don't want to change it
-
-struct FieldAdapter : HandleableUIPart
-{
-	float x, y, side_size, pixel_size, brightness;
-	int64_t hovered_x, hovered_y;
-	FieldAdapter(float x, float y, float side_size, float pixel_size, float brightness)
-	{
-		this->x = x;
-		this->y = y;
-		this->side_size = side_size;
-		this->pixel_size = pixel_size;
-		this->brightness = brightness;
-	}
-
-	void Draw() override {}
-	void SafeMove(float dx, float dy) override
-	{
-		x += dx;
-		y += dy;
-	}
-	void SafeChangePosition(float NewX, float NewY) override
-	{
-		x = NewX;
-		y = NewY;
-	}
-	void SafeChangePosition_Argumented(BYTE Arg, float NewX, float NewY) override
-	{
-
-	}
-	void KeyboardHandler(CHAR CH) override
-	{
-		return;
-	}
-	void SafeStringReplace(string Meaningless) override
-	{
-		return;
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
-	{
-		return 0;
-	}
-};
-
-struct SPHAdapter : FieldAdapter
-{
-	int draw_level;
-	bool extra_flare, edge_drawer, point_drawer, ext_draw;
-	grav_eq_processor* gep;
-	draw_type::dt draw_type;
-	SPHAdapter(grav_eq_processor* gep, float x, float y, float side_size, float particle_size, float brightness) :
-		FieldAdapter(x, y, side_size, particle_size, brightness),
-		gep(gep),
-		draw_type(draw_type::dt::density),
-		draw_level(15),
-		extra_flare(false),
-		edge_drawer(false),
-		point_drawer(false),
-		ext_draw(false)
-	{
-	}
-
-	inline static int ResolveSampleDepth(
-		int requested_depth,
-		float rendered_side_pixels,
-		float minimum_cell_pixels)
-	{
-		int depth = (std::clamp)(requested_depth, 0, 24);
-		const float usable_cell_count = rendered_side_pixels /
-			(std::max)(minimum_cell_pixels, 1.f);
-		while (depth > 0 && std::ldexp(1.f, depth) > usable_cell_count)
-			depth--;
-		return depth;
-	}
-
-	void DrawSampledGrid()
-	{
-		if (!gep || !gep->current.root_node || RANGE <= 0.f)
-			return;
-
-		node* root = gep->current.root_node;
-		const current_float_t simulation_side =
-			root->righttop_corner[0] - root->leftbottom_corner[0];
-		if (!(simulation_side > 0.f) || !(side_size > 0.f))
-			return;
-
-		const float pixels_per_render_unit =
-			(static_cast<float>((std::min)(WINDXSIZE, WINDYSIZE))) /
-			(2.f * RANGE);
-		const int sample_depth = ResolveSampleDepth(
-			draw_level,
-			std::abs(side_size) * pixels_per_render_unit,
-			pixel_size);
-		const uint32_t cells_per_side = uint32_t{1} << sample_depth;
-		const current_float_t relative_size = side_size / simulation_side;
-		const point render_center{x, y};
-		const point render_leftbottom =
-			root->leftbottom_corner * relative_size + render_center;
-		const point render_righttop =
-			root->righttop_corner * relative_size + render_center;
-		const current_float_t render_cell_size =
-			side_size / cells_per_side;
-
-		// Only evaluate cells intersecting the viewport. This keeps zoomed-in
-		// rendering proportional to visible pixels rather than to the full
-		// (mostly off-screen) dyadic grid.
-		const current_float_t view_half_width =
-			RANGE * (WindX / WINDXSIZE);
-		const current_float_t view_half_height =
-			RANGE * (WindY / WINDYSIZE);
-		const point view_leftbottom{
-			-view_half_width - centx,
-			-view_half_height - centy};
-		const point view_righttop{
-			view_half_width - centx,
-			view_half_height - centy};
-		const point clipped_leftbottom{
-			(std::max)(render_leftbottom[0], view_leftbottom[0]),
-			(std::max)(render_leftbottom[1], view_leftbottom[1])};
-		const point clipped_righttop{
-			(std::min)(render_righttop[0], view_righttop[0]),
-			(std::min)(render_righttop[1], view_righttop[1])};
-		if (clipped_leftbottom[0] >= clipped_righttop[0] ||
-			clipped_leftbottom[1] >= clipped_righttop[1])
-			return;
-
-		auto first_intersecting_cell = [&](current_float_t coordinate, int axis)
-		{
-			return static_cast<uint32_t>((std::clamp)(
-				static_cast<int64_t>(std::floor(
-					(coordinate - render_leftbottom[axis]) /
-					render_cell_size)),
-				int64_t{0},
-				static_cast<int64_t>(cells_per_side)));
-		};
-		auto past_last_intersecting_cell = [&](current_float_t coordinate, int axis)
-		{
-			return static_cast<uint32_t>((std::clamp)(
-				static_cast<int64_t>(std::ceil(
-					(coordinate - render_leftbottom[axis]) /
-					render_cell_size)),
-				int64_t{0},
-				static_cast<int64_t>(cells_per_side)));
-		};
-		const uint32_t x_begin = first_intersecting_cell(
-			clipped_leftbottom[0], 0);
-		const uint32_t x_end = past_last_intersecting_cell(
-			clipped_righttop[0], 0);
-		const uint32_t y_begin = first_intersecting_cell(
-			clipped_leftbottom[1], 1);
-		const uint32_t y_end = past_last_intersecting_cell(
-			clipped_righttop[1], 1);
-
-		const auto samples = gep->spatial_neighbors.sample_field_grid(
-			draw_type,
-			sample_depth,
-			x_begin,
-			x_end,
-			y_begin,
-			y_end);
-		glBegin(GL_QUADS);
-		for (uint32_t local_y = 0; local_y < samples.height; local_y++)
-			for (uint32_t local_x = 0; local_x < samples.width; local_x++)
-			{
-				const current_float_t value = samples.at(local_x, local_y);
-				if (value == 0.f || !std::isfinite(value))
-					continue;
-				const auto [red, green, blue] =
-					get_color(value * brightness);
-				glColor4f(red, green, blue, 1.f);
-
-				const uint32_t grid_x = samples.x_begin + local_x;
-				const uint32_t grid_y = samples.y_begin + local_y;
-				const current_float_t left = render_leftbottom[0] +
-					grid_x * render_cell_size;
-				const current_float_t bottom = render_leftbottom[1] +
-					grid_y * render_cell_size;
-				const current_float_t right = left + render_cell_size;
-				const current_float_t top = bottom + render_cell_size;
-				glVertex2f(left, bottom);
-				glVertex2f(right, bottom);
-				glVertex2f(right, top);
-				glVertex2f(left, top);
-			}
-		glEnd();
-	}
-
-	void Draw() override
-	{
-		if (!gep)
-			return;
-		std::lock_guard<std::mutex> guard(gep->pre_swap);
-		if (ext_draw)
-		{
-			DrawSampledGrid();
-			if (edge_drawer || point_drawer)
-				gep->current.draw(
-					draw_level,
-					{x,y},
-					side_size,
-					pixel_size,
-					brightness,
-					draw_type,
-					extra_flare,
-					edge_drawer,
-					point_drawer,
-					true);
-		}
-		else
-			gep->current.draw(
-				draw_level,
-				{x,y},
-				side_size,
-				pixel_size,
-				brightness,
-				draw_type,
-				extra_flare,
-				edge_drawer,
-				point_drawer,
-				false);
-	}
-	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
-	{
-		if (false && fabsf(mx - x) < 0.5 * side_size && fabsf(my - y) < 0.5 * side_size)
-		{
-			mx -= x;
-			my -= y;
-		}
-
-		return 0;
-	}
-};
-
-SPHAdapter* SPH_Adapter_ptr = new SPHAdapter(nullptr, 0, 0, 400, 2, 1);
-TextBox* TB_ptr = new TextBox("", System_White, -260, -155 - WindowHeapSize, 10, 70, 10, 0, 0xFFFFFFFF, 1, _Align::center);
-
-void OnWheel_BrightPress(double var)
-{
-	SPH_Adapter_ptr->brightness = var;
-}
-void OnWheel_TimeStep(double var)
-{
-	SPH_Adapter_ptr->gep->time_step = var;
-}
-void OnWheel_DrawDepth(double var)
-{
-	SPH_Adapter_ptr->draw_level = var;
-}
-void OnSelectPropList(int ID)
-{
-	//cout << ID << endl;;
-	switch (ID)
-	{
-		case 0:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::density; break;
-		case 1:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::energy; break;
-		case 2:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::x_speed; break;
-		case 3:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::y_speed; break;
-		case 4:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::x_acceleration; break;
-		case 5:
-			SPH_Adapter_ptr->draw_type = draw_type::dt::y_acceleration; break;
-	}
-}
-void Pause()
-{
-	SPH_Adapter_ptr->gep->is_paused ^= true;
-	switch (SPH_Adapter_ptr->gep->is_paused)
-	{
-		case true:
-			SPH_Adapter_ptr->gep->pause.lock();
-			break;
-		case false:
-			SPH_Adapter_ptr->gep->pause.unlock();
-			break;
-	}
-}
-
-ButtonSettings* BS_List_Black_Small = new ButtonSettings(System_White, 0, 0, 100, 10, 1, 0, 0, 0xFFEFDFFF, 0x00003F7F, 0x7F7F7FFF);
-WheelVariableChanger* WVC_ptr = nullptr;
-
-void Init()
-{
-	SelectablePropertedList* L;
-	auto T = new MoveableWindow("Field window", System_White, -325, 200 + WindowHeapSize, 525, 400 + WindowHeapSize, 0xFF, 0x7F7F7F7F);
-	(*T)["BRIGHTNESS"] = WVC_ptr = new WheelVariableChanger(OnWheel_BrightPress, -260, 175 - WindowHeapSize, SPH_Adapter_ptr->brightness, 0.1, System_White, "Brightness", "Delta", WheelVariableChanger::Type::linear);
-	(*T)["TIMESTEP"] = new WheelVariableChanger(OnWheel_TimeStep, -260, 120 - WindowHeapSize, SPH_Adapter_ptr->gep->time_step, 2, System_White, "Time step", "Delta", WheelVariableChanger::Type::exponential);
-	(*T)["DRAW_DEPTH"] = new WheelVariableChanger(OnWheel_DrawDepth, -260, 65 - WindowHeapSize, SPH_Adapter_ptr->draw_level, 1, System_White, "Draw depth", "Delta", WheelVariableChanger::Type::linear);
-	//(*T)["PRATE"] = new WheelVariableChanger(OnWheel_PRPress, -260, 10 - WindowHeapSize, bb::progressrate, 0.5, System_White, "PRate", "Delta", WheelVariableChanger::Type::linear);
-	(*T)["LIST"] = L = new SelectablePropertedList(BS_List_Black_Small, OnSelectPropList, nullptr, -260, -100 - WindowHeapSize, 70, 10, 15, 6, _Align::center);
-	L->PushStrings({"Density","Energy","Speed_x", "Speed_y","Acceleration_x","Acceleration_y"});
-	(*T)["PAUSE"] = new Button("Pause/Unpause", System_White, Pause, -260, -85 - WindowHeapSize, 70, 10, 1, 0, 0xFFFFFFFF, 0xFF, 0xFFFFFFFF, 0x7F7F7FFF, nullptr);
-
-	(*T)["FIELD"] = SPH_Adapter_ptr;
-	//(*T)["TEXTBOX"] = TB_ptr;
-
-	(*WH)["FWD"] = T;
-	WH->MainWindow_ID = "FWD";
-}
-
-///////////////////////////////////////
-/////////////END OF USE////////////////
-///////////////////////////////////////
-
-void onTimer(int v);
-void mDisplay()
-{
-	glClear(GL_COLOR_BUFFER_BIT);
-	if (FIRSTBOOT)
-	{
-		FIRSTBOOT = 0;
-
-		constexpr current_float_t size = 100;
-		constexpr current_float_t size_fraction = 2.5;
-		constexpr current_float_t initial_rotation_fraction = 0.1f;
-		constexpr int amount = 200000;
-		vector<particle> vec;
-
-		for (int i = 0; i < amount; i++)
-		{
-			auto t = (rand() & 1 ? -1 : 1);
-			point temp{std::abs(RANDFLOAT(size / size_fraction)) * t, RANDFLOAT(size / size_fraction)};
-			auto norma = temp.get_norm();
-			if (norma > size / size_fraction)
-				continue;
-
-			vec.push_back(particle(
-				temp * 0.75,
-				initial_rotation_fraction * point{-temp[1], temp[0]},
-				{0,0},
-				10000 + RANDFLOAT(15),
-				1, 0.01, 1
-			));
-		}
-
-		SPH_Adapter_ptr->gep = new grav_eq_processor(vec, size);
-
-		SPH_Adapter_ptr->gep->start_threads();
-		Pause();
-
-		WH = new WindowsHandler();
-		Init();
-
-		ANIMATION_IS_ACTIVE = !ANIMATION_IS_ACTIVE;
-		onTimer(0);
-	}
-
-	glTranslatef(centx, centy, 0);
-	WH->Draw();
-	glTranslatef(0 - centx, 0 - centy, 0);
-
-	//draw_smooth_circle(0, 0, 2, 10, 1.5, 45.);
-
-	glutSwapBuffers();
-}
-
-void mInit()
-{
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	gluOrtho2D((0 - RANGE) * (WindX / WINDXSIZE), RANGE * (WindX / WINDXSIZE), (0 - RANGE) * (WindY / WINDYSIZE), RANGE * (WindY / WINDYSIZE));
-}
-
-void onTimer(int v)
-{
-	glutTimerFunc(33, onTimer, 0);
-	if (ANIMATION_IS_ACTIVE)
-	{
-		mDisplay();
-		++TimerV;
-	}
-}
-
-void OnResize(int x, int y)
-{
-	WindX = x;
-	WindY = y;
-	mInit();
-	glViewport(0, 0, x, y);
-}
-void inline absoluteToActualCoords(int ix, int iy, float& x, float& y)
-{
-	float wx = WindX, wy = WindY, t;
-	x = ((float)(ix - wx * 0.5)) / (0.5 * (wx / (RANGE * (WindX / WINDXSIZE))));
-	y = ((float)(0 - iy + wy * 0.5)) / (0.5 * (wy / (RANGE * (WindY / WINDYSIZE))));
-	t = x * cos(ROT_RAD) + y * sin(ROT_RAD) - centx;
-	y = 0 - x * sin(ROT_RAD) + y * cos(ROT_RAD) - centy;
-	x = t;
-}
-void mMotion(int ix, int iy)
-{
-	float fx, fy;
-	absoluteToActualCoords(ix, iy, fx, fy);
-	MXPOS = fx;
-	MYPOS = fy;
-	if (WH)WH->MouseHandler(fx, fy, 0, 0);
-}
-void mKey(BYTE k, int x, int y)
-{
-	if (WH)WH->KeyboardHandler(k);
-
-	if (k == '=') { ANIMATION_IS_ACTIVE = !ANIMATION_IS_ACTIVE; }
-	else if (k == 27)exit(1);
-	else
-	{
-		switch (k)
-		{
-			case 'w':
-				centy -= RANGE / 15;
-				break;
-			case 's':
-				centy += RANGE / 15;
-				break;
-			case 'd':
-				centx -= RANGE / 15;
-				break;
-			case 'a':
-				centx += RANGE / 15;
-				break;
-			case ' ':
-				Pause();
-				break;
-			case 'x':
-				SPH_Adapter_ptr->extra_flare ^= true;
-				break;
-			case 'e':
-				SPH_Adapter_ptr->edge_drawer ^= true;
-				break;
-			case 'q':
-				SPH_Adapter_ptr->gep->flickering ^= true;
-				break;
-			case 'v':
-				SPH_Adapter_ptr->point_drawer ^= true;
-				break;
-			case 'r':
-				WVC_ptr->ForceUpdateValue(true);
-				break;
-			case 'f':
-				WVC_ptr->ForceUpdateValue(false);
-				break;
-			case '`':
-				SPH_Adapter_ptr->ext_draw ^= true;
-				break;
-		}//ForceUpdateValue
-	}
-}
-void mDrag(int x, int y)
-{
-	//mClick(88, MOUSE_DRAG_EVENT, x, y);
-	mMotion(x, y);
-}
-void mClick(int butt, int state, int x, int y)
-{
-	float fx, fy;
-	CHAR Button, State = 0;
-	absoluteToActualCoords(x, y, fx, fy);
-	Button = butt - 1;
-	if (state == GLUT_DOWN)State = -1;
-	else if (state == GLUT_UP)State = 1;
-	if (WH)WH->MouseHandler(fx, fy, Button, State);
-}
-void mSpecialKey(int Key, int x, int y)
-{
-	//cout << "Spec: " << Key << endl;
-	if (Key == GLUT_KEY_DOWN)
-	{
-		RANGE *= 1.1;
-		OnResize(WindX, WindY);
-	}
-	else if (Key == GLUT_KEY_UP)
-	{
-		RANGE /= 1.1;
-		OnResize(WindX, WindY);
-	}
-}
-void mExit(int a)
-{
-
-}
-
-struct HeadlessSimulationStats
-{
-	int particles = 0;
-	current_float_t max_speed = 0;
-	current_float_t max_acceleration = 0;
-	current_float_t max_mass = 0;
-	current_float_t rms_radius = 0;
-	point momentum = {0.f, 0.f};
-	bool finite = true;
-};
-
-HeadlessSimulationStats CollectSimulationStats(quad_tree& tree)
-{
-	HeadlessSimulationStats result;
-	current_float_t total_mass = 0;
-	current_float_t weighted_radius_squared = 0;
-	point weighted_position = {0.f, 0.f};
-	std::vector<node*> pending{tree.root_node};
-	while (!pending.empty())
-	{
-		node* current_node = pending.back();
-		pending.pop_back();
-		if (current_node->particles_count_in_subtrees)
-		{
-			for (node::positioning position = node::leftbottom; position < node::null; ((int&)position)++)
-			{
-				if (node* child = current_node->get(position))
-					pending.push_back(child);
-			}
-			continue;
-		}
-		const particle& current_particle = current_node->mass_center;
-		if (current_particle.mass == 0)
-			continue;
-		result.particles++;
-		result.max_speed = (std::max)(result.max_speed, current_particle.velocity.get_norm());
-		result.max_acceleration = (std::max)(result.max_acceleration, current_particle.acceleration.get_norm());
-		result.max_mass = (std::max)(result.max_mass, current_particle.mass);
-		result.momentum += current_particle.mass * current_particle.velocity;
-		total_mass += current_particle.mass;
-		weighted_position += current_particle.mass * current_particle.position;
-		weighted_radius_squared += current_particle.mass * current_particle.position.get_norm2();
-		result.finite = result.finite &&
-			std::isfinite(current_particle.position[0]) && std::isfinite(current_particle.position[1]) &&
-			std::isfinite(current_particle.velocity[0]) && std::isfinite(current_particle.velocity[1]) &&
-			std::isfinite(current_particle.acceleration[0]) && std::isfinite(current_particle.acceleration[1]) &&
-			std::isfinite(current_particle.mass) && std::isfinite(current_particle.radius) &&
-			std::isfinite(current_particle.energy);
-	}
-	if (total_mass > 0)
-	{
-		const point center_of_mass = weighted_position / total_mass;
-		result.rms_radius = sqrt((std::max)(
-			weighted_radius_squared / total_mass - center_of_mass.get_norm2(),
-			0.f));
-	}
-	return result;
-}
-
-int RunHeadlessSimulation(int requested_steps, unsigned int seed)
-{
-	constexpr current_float_t size = 100.f;
-	constexpr current_float_t size_fraction = 2.5f;
-	constexpr current_float_t initial_rotation_fraction = 0.1f;
-	constexpr int amount = 200;
-	srand(seed);
-	vector<particle> particles;
-	for (int i = 0; i < amount; i++)
-	{
-		const auto sign = (rand() & 1 ? -1 : 1);
-		point candidate{
-			std::abs(RANDFLOAT(size / size_fraction)) * sign,
-			RANDFLOAT(size / size_fraction)
-		};
-		if (candidate.get_norm() > size / size_fraction)
-			continue;
-		particles.push_back(particle(
-			candidate * 0.75f,
-			initial_rotation_fraction * point{-candidate[1], candidate[0]},
-			{0.f, 0.f},
-			400000.f / amount + RANDFLOAT(5),
-			1.f,
-			1.f,
-			1));
-	}
-
-	grav_eq_processor processor(particles, size);
-	grav_eq_iteration_buffers iteration_buffers;
-	const HeadlessSimulationStats initial = CollectSimulationStats(processor.current);
-	const int report_interval = (std::max)(requested_steps / 10, 1);
-	printf(
-		"step=0 time=0 particles=%d rms_r=%.6g max_mass=%.6g max_v=%.6g max_a=%.6g "
-		"P=(%.9g,%.9g) finite=%d\n",
-		initial.particles,
-		initial.rms_radius,
-		initial.max_mass,
-		initial.max_speed,
-		initial.max_acceleration,
-		initial.momentum[0],
-		initial.momentum[1],
-		initial.finite ? 1 : 0);
-
-	for (int step = 0; step < requested_steps; step++)
-	{
-		processor.prepare_iteration();
-		processor.local_time_step = (std::max)(
-			(std::min)(processor.current.root_node->mass_center.cfl_time, processor.time_step),
-			(current_float_t)1e-8f);
-		processor.iterate_subtree(
-			processor.current.root_node,
-			iteration_buffers);
-		processor.current.clear();
-		processor.current.swap(processor.buffer);
-		processor.total_time += processor.local_time_step;
-
-		if ((step + 1) % report_interval == 0 || step + 1 == requested_steps)
-		{
-			const HeadlessSimulationStats stats = CollectSimulationStats(processor.current);
-			printf(
-				"step=%d time=%.6g particles=%d rms_r=%.6g max_mass=%.6g max_v=%.6g max_a=%.6g "
-				"P=(%.9g,%.9g) finite=%d\n",
-				step + 1,
-				processor.total_time,
-				stats.particles,
-				stats.rms_radius,
-				stats.max_mass,
-				stats.max_speed,
-				stats.max_acceleration,
-				stats.momentum[0],
-				stats.momentum[1],
-				stats.finite ? 1 : 0);
-			if (!stats.finite || stats.particles == 0 || stats.max_speed > 1e6f)
-				return 1;
-		}
-	}
-	return 0;
-}
-
-int RunPreparationBenchmark(
-	int requested_particles,
-	int requested_steps,
-	current_float_t radius_in_spacings)
-{
-	const int side = static_cast<int>(std::ceil(std::sqrt(
-		static_cast<double>((std::max)(requested_particles, 1)))));
-	const current_float_t spacing = 1.f;
-	const current_float_t size = static_cast<current_float_t>(side + 4);
-	vector<particle> particles;
-	particles.reserve(requested_particles);
-	for (int y = 0; y < side && particles.size() < requested_particles; y++)
-		for (int x = 0; x < side && particles.size() < requested_particles; x++)
-			particles.emplace_back(
-				point{
-					(x - (side - 1) * 0.5f) * spacing,
-					(y - (side - 1) * 0.5f) * spacing},
-				point{0.f, 0.f},
-				point{0.f, 0.f},
-				1.f,
-				radius_in_spacings * spacing,
-				1.f);
-
-	grav_eq_processor processor(particles, size);
-	grav_eq_iteration_buffers iteration_buffers;
-	const bool preparation_only = requested_steps <= 0;
-	const int steps = (std::max)(requested_steps, 1);
-	double preparation_ms = 0.;
-	double iteration_ms = 0.;
-	double neighbor_graph_ms = 0.;
-	double task_split_ms = 0.;
-	for (int step = 0; step < steps; step++)
-	{
-		const auto preparation_begin = std::chrono::steady_clock::now();
-		processor.spatial_neighbors.build_neighbor_graph(
-			processor.current.root_node);
-		const auto graph_end = std::chrono::steady_clock::now();
-		processor.build_subdivision_tasks();
-		const auto preparation_end = std::chrono::steady_clock::now();
-		if (!preparation_only)
-		{
-			processor.local_time_step = processor.time_step;
-			processor.iterate_subtree(
-				processor.current.root_node,
-				iteration_buffers);
-		}
-		const auto iteration_end = std::chrono::steady_clock::now();
-
-		neighbor_graph_ms += std::chrono::duration<double, std::milli>(
-			graph_end - preparation_begin).count();
-		task_split_ms += std::chrono::duration<double, std::milli>(
-			preparation_end - graph_end).count();
-		preparation_ms += std::chrono::duration<double, std::milli>(
-			preparation_end - preparation_begin).count();
-		iteration_ms += std::chrono::duration<double, std::milli>(
-			iteration_end - preparation_end).count();
-
-		if (!preparation_only)
-		{
-			processor.current.clear();
-			processor.current.swap(processor.buffer);
-		}
-	}
-
-	printf(
-		"particles=%zu steps=%d radius=%.3f preparation_ms=%.3f neighbor_graph_ms=%.3f "
-		"task_split_ms=%.3f serial_iteration_ms=%.3f tasks=%zu neighbors=%zu\n",
-		particles.size(),
-		preparation_only ? 0 : steps,
-		radius_in_spacings,
-		preparation_ms / steps,
-		neighbor_graph_ms / steps,
-		task_split_ms / steps,
-		iteration_ms / steps,
-		processor._subdivision_roots.size(),
-		processor.spatial_neighbors.neighbors.size());
-	return 0;
-}
-
-int RunNumericalSelfTests()
+int run_numerical_self_tests()
 {
 	int failures = 0;
 	auto check = [&](bool condition, const char* name)
 	{
-		printf("[%s] %s\n", condition ? "PASS" : "FAIL", name);
+		std::printf("[%s] %s\n", condition ? "PASS" : "FAIL", name);
 		if (!condition)
-			failures++;
-	};
-	auto nearly_equal = [](current_float_t lhs, current_float_t rhs, current_float_t tolerance = 1e-5f)
-	{
-		return std::abs(lhs - rhs) <= tolerance;
+			++failures;
 	};
 
-	const current_float_t kernel_h = 1.3f;
-	const current_float_t kernel_r = 0.37f;
-	const current_float_t finite_difference_step = 1e-4f;
-	const point kernel_sample{kernel_r, 0.f};
-	const point kernel_gradient =
-		grav_eq_utils::pressure_core_gradient(kernel_sample, kernel_h);
-	const current_float_t finite_difference_gradient =
-		(grav_eq_utils::pressure_core(kernel_r + finite_difference_step, kernel_h) -
-			grav_eq_utils::pressure_core(kernel_r - finite_difference_step, kernel_h)) /
-		(2.f * finite_difference_step);
+	const float smoothing_length = 1.3f;
+	const float sample_radius = 0.37f;
+	const float difference_step = 1e-4f;
+	const sph::Vec3 sample{sample_radius, 0.f, 0.f};
+	const sph::Vec3 gradient = sph::wendland_c2_gradient(sample, smoothing_length);
+	const float numerical_gradient =
+		(sph::wendland_c2(sample_radius + difference_step, smoothing_length) -
+		 sph::wendland_c2(sample_radius - difference_step, smoothing_length)) /
+		(2.f * difference_step);
 	check(
-		nearly_equal(
-			kernel_gradient[0],
-			finite_difference_gradient,
-			2e-3f) &&
-		nearly_equal(kernel_gradient[1], 0.f) &&
-		grav_eq_utils::pressure_core_gradient(
-			point{0.01f, 0.f},
-			1.f).get_norm2() > 0.f &&
-		grav_eq_utils::pressure_core_gradient(
-			point{0.f, 0.f},
-			1.f).get_norm2() == 0.f,
-		"Wendland gradient is smooth at the origin and matches finite differences");
+		nearly_equal(gradient[0], numerical_gradient, 2e-3f) &&
+		nearly_equal(gradient[1], 0.f) && nearly_equal(gradient[2], 0.f) &&
+		sph::wendland_c2_gradient({0.f, 0.f, 0.f}, 1.f).get_norm2() == 0.f,
+		"3D Wendland gradient matches finite differences and is smooth at the origin");
 
-	constexpr int kernel_integration_steps = 8192;
-	current_float_t kernel_integral = 0.f;
-	const current_float_t kernel_dr =
-		kernel_h / kernel_integration_steps;
-	for (int step = 0; step < kernel_integration_steps; step++)
+	constexpr int integration_steps = 16384;
+	const float dr = smoothing_length / integration_steps;
+	float integral = 0.f;
+	for (int step = 0; step < integration_steps; ++step)
 	{
-		const current_float_t radius =
-			(step + 0.5f) * kernel_dr;
-		kernel_integral +=
-			2.f * grav_eq_utils::pi * radius *
-			grav_eq_utils::pressure_core(radius, kernel_h) *
-			kernel_dr;
-	}
-	const current_float_t inverse_sample =
-		grav_eq_utils::inverse_pressure_core(
-			grav_eq_utils::pressure_core(kernel_r, kernel_h),
-			kernel_h);
-	check(
-		nearly_equal(kernel_integral, 1.f, 2e-4f) &&
-		nearly_equal(inverse_sample, kernel_r, 1e-5f) &&
-		grav_eq_utils::pressure_core(kernel_h, kernel_h) == 0.f,
-		"two-dimensional Wendland kernel is normalized and compactly supported");
-
-	buffered_queue_spsc<int, 4> test_buffer;
-	std::vector<int*> buffered_values;
-	for (int value = 0; value < 10; value++)
-		buffered_values.push_back(&test_buffer.emplace(value));
-	bool buffer_is_stable = test_buffer.approximate_size() == buffered_values.size();
-	for (int value = 0; value < (int)buffered_values.size(); value++)
-		buffer_is_stable = buffer_is_stable && *buffered_values[value] == value;
-	test_buffer.clear();
-	buffer_is_stable = buffer_is_stable &&
-		test_buffer.empty() &&
-		test_buffer.approximate_size() == 0 &&
-		test_buffer.emplace(42) == 42;
-	check(
-		buffer_is_stable,
-		"buffered allocator preserves addresses across slabs and resets for reuse");
-
-	std::vector<particle> subdivision_particles;
-	for (int y = 0; y < 8; y++)
-		for (int x = 0; x < 8; x++)
-			subdivision_particles.emplace_back(
-				point{-7.f + 2.f * x, -7.f + 2.f * y},
-				point{0.f, 0.f},
-				point{0.f, 0.f},
-				1.f,
-				0.35f + 0.55f * ((x + 2 * y) % 5),
-				1.f);
-	grav_eq_processor subdivision_processor(subdivision_particles, 32.f);
-	subdivision_processor.prepare_iteration();
-	size_t subdivision_particle_total = 0;
-	size_t largest_subdivision_task = 0;
-	for (node* task_root : subdivision_processor._subdivision_roots)
-	{
-		const size_t task_particles =
-			grav_eq_processor::subtree_particle_count(task_root);
-		subdivision_particle_total += task_particles;
-		largest_subdivision_task = (std::max)(
-			largest_subdivision_task,
-			task_particles);
+		const float radius = (step + 0.5f) * dr;
+		integral += 4.f * sph::pi * radius * radius *
+			sph::wendland_c2(radius, smoothing_length) * dr;
 	}
 	check(
-		subdivision_particle_total == subdivision_particles.size() &&
-		subdivision_processor._subdivision_roots.size() >=
-		(std::min)(subdivision_particles.size(), subdivision_processor.num_of_threads) &&
-		largest_subdivision_task <
-		grav_eq_processor::subtree_particle_count(
-			subdivision_processor.current.root_node),
-		"adaptive subdivision covers every particle with multiple balanced tasks");
+		nearly_equal(integral, 1.f, 3e-4f) &&
+		sph::wendland_c2(smoothing_length, smoothing_length) == 0.f,
+		"3D Wendland kernel is normalized over volume and compactly supported");
 
-	bool neighbor_graph_matches_brute_force = true;
-	vecnode hashed_neighbors;
-	const auto& hashed_nodes =
-		subdivision_processor.spatial_neighbors.particle_nodes;
-	std::vector<current_float_t> brute_densities(
-		hashed_nodes.size(),
-		0.f);
-	for (node* source_node : hashed_nodes)
+	sph::InitialConditions cloud_settings;
+	cloud_settings.particle_count = 1000;
+	cloud_settings.seed = 42;
+	const auto cloud = sph::make_rotating_cloud(cloud_settings);
+	bool cloud_is_valid = cloud.size() == cloud_settings.particle_count;
+	const float cloud_radius = cloud_settings.domain_size * cloud_settings.cloud_radius_fraction;
+	for (const sph::Particle& particle : cloud)
+		cloud_is_valid = cloud_is_valid && particle.position.get_norm() <= cloud_radius &&
+			nearly_equal(particle.velocity[2], 0.f);
+	check(cloud_is_valid, "spherical initializer produces the requested particle count and axial rotation");
+
+	std::vector<sph::Particle> lattice;
+	for (int z = 0; z < 4; ++z)
+		for (int y = 0; y < 4; ++y)
+			for (int x = 0; x < 4; ++x)
+				lattice.push_back(sph::Particle{
+					.position = {-3.f + 2.f * x, -3.f + 2.f * y, -3.f + 2.f * z},
+					.velocity = {},
+					.acceleration = {},
+					.mass = 1.f,
+					.smoothing_length = 2.6f,
+					.energy = 1.f,
+					.cfl_time = 1.f,
+					.interaction_count = 1});
+	sph::SimulationConfig no_forces;
+	no_forces.enable_gravity = false;
+	no_forces.enable_hydrodynamics = false;
+	sph::Simulation3D lattice_simulation(lattice, 16.f, no_forces);
+	lattice_simulation.prepare();
+	bool densities_match = true;
+	for (std::size_t first = 0; first < lattice.size(); ++first)
 	{
-		subdivision_processor.spatial_neighbors.collect_neighbors(
-			source_node,
-			hashed_neighbors);
-		std::vector<bool> seen(hashed_nodes.size(), false);
-		for (node* neighbor : hashed_neighbors)
+		float brute_density = 0.f;
+		for (const sph::Particle& second : lattice)
 		{
-			if (neighbor->spatial_index >= seen.size() ||
-				seen[neighbor->spatial_index])
-			{
-				neighbor_graph_matches_brute_force = false;
-				continue;
-			}
-			seen[neighbor->spatial_index] = true;
+			const float support = std::max(
+				lattice[first].smoothing_length,
+				second.smoothing_length);
+			brute_density += second.mass * sph::wendland_c2(
+				lattice[first].position - second.position,
+				support);
 		}
-
-		for (node* candidate : hashed_nodes)
-		{
-			const current_float_t support_radius = (std::max)(
-				source_node->mass_center.radius,
-				candidate->mass_center.radius);
-			const bool expected =
-				(source_node->mass_center.position -
-					candidate->mass_center.position).get_norm2() <=
-				support_radius * support_radius;
-			if (expected)
-				brute_densities[source_node->spatial_index] +=
-					candidate->mass_center.mass *
-					grav_eq_utils::pressure_core(
-						source_node->mass_center.position -
-							candidate->mass_center.position,
-						support_radius);
-			neighbor_graph_matches_brute_force =
-				neighbor_graph_matches_brute_force &&
-				seen[candidate->spatial_index] == expected;
-		}
+		densities_match = densities_match && nearly_equal(
+			lattice_simulation.densities()[first],
+			brute_density,
+			1e-4f * std::max(1.f, brute_density));
 	}
-	bool cached_fields_match_brute_force = true;
-	for (node* source_node : hashed_nodes)
-	{
-		current_float_t brute_energy = 0.f;
-		for (node* candidate : hashed_nodes)
-		{
-			const current_float_t support_radius = (std::max)(
-				source_node->mass_center.radius,
-				candidate->mass_center.radius);
-			const point difference =
-				source_node->mass_center.position -
-				candidate->mass_center.position;
-			if (difference.get_norm2() > support_radius * support_radius)
-				continue;
-			brute_energy +=
-				(candidate->mass_center.mass /
-					brute_densities[candidate->spatial_index]) *
-				candidate->mass_center.energy *
-				grav_eq_utils::pressure_core(
-					difference,
-					support_radius);
-		}
-		const current_float_t density_tolerance = 1e-4f * (std::max)(
-			1.f,
-			std::abs(brute_densities[source_node->spatial_index]));
-		const current_float_t energy_tolerance =
-			1e-4f * (std::max)(1.f, std::abs(brute_energy));
-		cached_fields_match_brute_force =
-			cached_fields_match_brute_force &&
-			nearly_equal(
-				subdivision_processor.spatial_neighbors.density_at(source_node),
-				brute_densities[source_node->spatial_index],
-				density_tolerance) &&
-			nearly_equal(
-				subdivision_processor.spatial_neighbors.energy_at(source_node),
-				brute_energy,
-				energy_tolerance);
-	}
-	check(
-		neighbor_graph_matches_brute_force,
-		"hierarchical spatial hash matches symmetric brute-force neighbours");
-	check(
-		cached_fields_match_brute_force,
-		"cached SPH density and energy match symmetric brute force");
+	check(densities_match, "3D spatial hash density matches brute force");
 
-	particle sampled_particle(
-		{0.f, 0.f},
-		{5.f, -6.f},
-		{7.f, -8.f},
-		3.f,
-		2.f,
-		4.f);
-	grav_eq_processor sampled_field_processor({sampled_particle}, 8.f);
-	sampled_field_processor.prepare_iteration();
-	auto sample_center = [&](draw_type::dt type)
-	{
-		return sampled_field_processor.spatial_neighbors.sample_field_grid(
-			type,
-			0).at(0, 0);
-	};
-	const current_float_t expected_sampled_density =
-		sampled_particle.mass * grav_eq_utils::pressure_core(0.f, sampled_particle.radius);
-	check(
-		nearly_equal(
-			sample_center(draw_type::dt::density),
-			expected_sampled_density,
-			1e-4f) &&
-		nearly_equal(sample_center(draw_type::dt::energy), 4.f) &&
-		nearly_equal(sample_center(draw_type::dt::x_speed), 5.f) &&
-		nearly_equal(sample_center(draw_type::dt::y_speed), -6.f) &&
-		nearly_equal(sample_center(draw_type::dt::x_acceleration), 7.f) &&
-		nearly_equal(sample_center(draw_type::dt::y_acceleration), -8.f),
-		"sampled grid evaluates SPH scalar and vector fields at cell centers");
-	check(
-		SPHAdapter::ResolveSampleDepth(15, 720.f, 2.f) == 8 &&
-		SPHAdapter::ResolveSampleDepth(5, 720.f, 2.f) == 5 &&
-		SPHAdapter::ResolveSampleDepth(-3, 720.f, 2.f) == 0,
-		"sampled grid depth follows draw depth and visible pixel size");
-
-	particle light_center({-1.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, 2.f, 0.5f, 1.f);
-	particle heavy_center = light_center;
-	heavy_center.mass = 2000.f;
-	particle distant({1.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, 5.f, 0.5f, 1.f);
-	const point light_acceleration = grav_eq_processor::grav_force(light_center, distant);
-	const point heavy_acceleration = grav_eq_processor::grav_force(heavy_center, distant);
+	sph::Particle light{
+		.position = {-1.f, 0.f, 0.5f}, .mass = 2.f, .smoothing_length = 0.5f};
+	sph::Particle heavy = light;
+	heavy.mass = 2000.f;
+	sph::Particle distant{
+		.position = {1.f, 0.f, -0.5f}, .mass = 5.f, .smoothing_length = 0.5f};
+	const sph::Vec3 light_acceleration = sph::Simulation3D::pair_gravity(light, distant, 0.001f);
+	const sph::Vec3 heavy_acceleration = sph::Simulation3D::pair_gravity(heavy, distant, 0.001f);
+	const sph::Vec3 reverse_acceleration = sph::Simulation3D::pair_gravity(distant, light, 0.001f);
 	check(
 		(light_acceleration - heavy_acceleration).get_norm() < 1e-7f,
-		"gravity acceleration is independent of the accelerated particle's mass");
-
-	const point reverse_acceleration = grav_eq_processor::grav_force(distant, light_center);
-	const point momentum_derivative =
-		light_center.mass * light_acceleration + distant.mass * reverse_acceleration;
+		"gravity acceleration is independent of accelerated mass");
 	check(
-		momentum_derivative.get_norm() < 1e-6f,
-		"pairwise gravity conserves linear momentum");
+		(light.mass * light_acceleration + distant.mass * reverse_acceleration).get_norm() < 1e-6f,
+		"3D pair gravity conserves linear momentum");
 
-	particle coincident = distant;
-	coincident.position = light_center.position;
-	const point coincident_acceleration = grav_eq_processor::grav_force(light_center, coincident);
-	check(
-		std::isfinite(coincident_acceleration[0]) &&
-		std::isfinite(coincident_acceleration[1]) &&
-		coincident_acceleration.get_norm2() == 0,
-		"softened coincident gravity remains finite");
-
-	particle inertial_particle(
-		{1.f, 2.f}, {3.f, -4.f}, {0.f, 0.f}, 1.f, 1.f, 1.f);
-	grav_eq_processor inertial_processor({inertial_particle}, 100.f);
-	grav_eq_iteration_buffers iteration_buffers;
-	inertial_processor.prepare_iteration();
-	particle inertial_result = inertial_processor.iterate_over_particle(
-		inertial_processor.current.root_node,
-		iteration_buffers,
-		inertial_processor.heat_capacity,
-		inertial_processor.polytropic_coef,
-		0.01f);
+	sph::Particle inertial{
+		.position = {1.f, 2.f, 3.f},
+		.velocity = {3.f, -4.f, 5.f},
+		.acceleration = {},
+		.mass = 1.f,
+		.smoothing_length = 1.f,
+		.energy = 1.f,
+		.cfl_time = 1.f};
+	no_forces.maximum_time_step = 0.01f;
+	sph::Simulation3D inertial_simulation({inertial}, 100.f, no_forces);
+	(void)inertial_simulation.step();
+	const sph::Particle& inertial_result = inertial_simulation.particles().front();
 	check(
 		nearly_equal(inertial_result.position[0], 1.03f) &&
 		nearly_equal(inertial_result.position[1], 1.96f) &&
-		nearly_equal(inertial_result.velocity[0], 3.f) &&
-		nearly_equal(inertial_result.velocity[1], -4.f),
-		"integrator drifts an inertial particle exactly once per step");
+		nearly_equal(inertial_result.position[2], 3.05f) &&
+		(inertial_result.velocity - inertial.velocity).get_norm2() == 0.f,
+		"3D symplectic integrator drifts an inertial particle exactly once");
 
-	particle first({-2.f, 0.f}, {0.f, 0.02f}, {0.f, 0.f}, 2.f, 0.2f, 1.f);
-	particle second({2.f, 0.f}, {0.f, -0.008f}, {0.f, 0.f}, 5.f, 0.2f, 1.f);
-	const point initial_momentum = first.mass * first.velocity + second.mass * second.velocity;
-	bool finite_orbit = true;
-	for (int step = 0; step < 20000; step++)
+	sph::SimulationConfig gravity_only;
+	gravity_only.enable_hydrodynamics = false;
+	gravity_only.maximum_time_step = 0.001f;
+	sph::Particle first{
+		.position = {-2.f, 0.f, 0.25f},
+		.velocity = {0.f, 0.02f, 0.f},
+		.mass = 2.f,
+		.smoothing_length = 0.2f,
+		.energy = 1.f,
+		.cfl_time = 1.f};
+	sph::Particle second{
+		.position = {2.f, 0.f, -0.25f},
+		.velocity = {0.f, -0.008f, 0.f},
+		.mass = 5.f,
+		.smoothing_length = 0.2f,
+		.energy = 1.f,
+		.cfl_time = 1.f};
+	const sph::Vec3 initial_momentum = first.mass * first.velocity + second.mass * second.velocity;
+	sph::Simulation3D pair_simulation({first, second}, 100.f, gravity_only);
+	bool finite_pair = true;
+	for (int step = 0; step < 1000; ++step)
 	{
-		const point first_acceleration = grav_eq_processor::grav_force(first, second);
-		const point second_acceleration = grav_eq_processor::grav_force(second, first);
-		first.velocity += 0.001f * first_acceleration;
-		second.velocity += 0.001f * second_acceleration;
-		first.position += 0.001f * first.velocity;
-		second.position += 0.001f * second.velocity;
-		finite_orbit = finite_orbit &&
-			std::isfinite(first.position[0]) && std::isfinite(first.position[1]) &&
-			std::isfinite(second.position[0]) && std::isfinite(second.position[1]);
+		(void)pair_simulation.step();
+		for (const sph::Particle& particle : pair_simulation.particles())
+			for (std::size_t axis = 0; axis < 3; ++axis)
+				finite_pair = finite_pair && std::isfinite(particle.position[axis]);
 	}
-	const point final_momentum = first.mass * first.velocity + second.mass * second.velocity;
+	const auto pair_snapshot = pair_simulation.make_snapshot();
 	check(
-		finite_orbit && (final_momentum - initial_momentum).get_norm() < 1e-5f,
-		"long two-body run remains finite and conserves momentum");
+		finite_pair && (pair_snapshot.momentum - initial_momentum).get_norm() < 1e-4f,
+		"long 3D two-body run remains finite and conserves momentum");
 
-	printf("%s: %d failure(s)\n", failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED", failures);
+	std::printf("%s: %d failure(s)\n",
+		failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED",
+		failures);
 	return failures ? 1 : 0;
 }
+
+int run_headless(int steps, std::uint32_t seed, std::size_t particle_count)
+{
+	sph::InitialConditions initial;
+	initial.particle_count = particle_count;
+	initial.seed = seed;
+	sph::Simulation3D simulation(
+		sph::make_rotating_cloud(initial),
+		initial.domain_size);
+	const int report_interval = std::max(steps / 10, 1);
+	for (int step = 0; step < steps; ++step)
+	{
+		const auto begin = std::chrono::steady_clock::now();
+		(void)simulation.step();
+		const float elapsed_ms = static_cast<float>(
+			std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - begin).count());
+		if ((step + 1) % report_interval == 0 || step + 1 == steps)
+		{
+			const auto snapshot = simulation.make_snapshot(elapsed_ms);
+			std::printf(
+				"step=%llu time=%.7g dt=%.7g particles=%zu step_ms=%.3f prep_ms=%.3f "
+				"max_rho=%.7g max_v=%.7g max_a=%.7g P=(%.8g,%.8g,%.8g) finite=%d\n",
+				static_cast<unsigned long long>(snapshot.step),
+				snapshot.total_time,
+				snapshot.last_time_step,
+				snapshot.particles.size(),
+				snapshot.step_milliseconds,
+				snapshot.preparation_milliseconds,
+				snapshot.maximum_density,
+				snapshot.maximum_speed,
+				snapshot.maximum_acceleration,
+				snapshot.momentum[0],
+				snapshot.momentum[1],
+				snapshot.momentum[2],
+				snapshot.finite ? 1 : 0);
+			if (!snapshot.finite)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+int run_preparation_benchmark(int requested_particles, int requested_steps, float radius_in_spacings)
+{
+	const int side = static_cast<int>(std::ceil(std::cbrt(
+		static_cast<double>(std::max(requested_particles, 1)))));
+	std::vector<sph::Particle> particles;
+	particles.reserve(requested_particles);
+	for (int z = 0; z < side && particles.size() < static_cast<std::size_t>(requested_particles); ++z)
+		for (int y = 0; y < side && particles.size() < static_cast<std::size_t>(requested_particles); ++y)
+			for (int x = 0; x < side && particles.size() < static_cast<std::size_t>(requested_particles); ++x)
+				particles.push_back(sph::Particle{
+					.position = {
+						x - (side - 1) * 0.5f,
+						y - (side - 1) * 0.5f,
+						z - (side - 1) * 0.5f},
+					.velocity = {},
+					.acceleration = {},
+					.mass = 1.f,
+					.smoothing_length = radius_in_spacings,
+					.energy = 1.f,
+					.cfl_time = 1.f});
+	sph::SimulationConfig config;
+	config.enable_gravity = requested_steps > 0;
+	sph::Simulation3D simulation(std::move(particles), side + 4.f, config);
+	const int runs = std::max(requested_steps, 1);
+	double elapsed_ms = 0.;
+	for (int run = 0; run < runs; ++run)
+	{
+		const auto begin = std::chrono::steady_clock::now();
+		if (requested_steps > 0)
+			(void)simulation.step();
+		else
+			simulation.prepare();
+		elapsed_ms += std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - begin).count();
+	}
+	const auto snapshot = simulation.make_snapshot();
+	std::printf(
+		"particles=%zu steps=%d radius=%.3f average_ms=%.3f prep_ms=%.3f "
+		"octree_nodes=%zu occupied_cells=%zu\n",
+		snapshot.particles.size(),
+		requested_steps > 0 ? runs : 0,
+		radius_in_spacings,
+		elapsed_ms / runs,
+		snapshot.preparation_milliseconds,
+		snapshot.octree_nodes,
+		snapshot.occupied_cells);
+	return 0;
+}
+
+void glfw_error_callback(int error, const char* description)
+{
+	std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
+}
+
+int run_gui(bool smoke_test = false)
+{
+	glfwSetErrorCallback(glfw_error_callback);
+	if (!glfwInit())
+		return 1;
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	glfwWindowHint(GLFW_SAMPLES, 4);
+	if (smoke_test)
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+	GLFWwindow* window = glfwCreateWindow(1280, 800, "SPH Gas Cloud 3D", nullptr, nullptr);
+	if (!window)
+	{
+		glfwTerminate();
+		return 1;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSwapInterval(1);
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO();
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	ImGui::StyleColorsDark();
+	ImGuiStyle& style = ImGui::GetStyle();
+	style.WindowRounding = 6.f;
+	style.FrameRounding = 4.f;
+	ImGui_ImplGlfw_InitForOpenGL(window, true);
+	ImGui_ImplOpenGL3_Init("#version 330 core");
+
+	int exit_code = 0;
+	try
+	{
+		sph::InitialConditions initial;
+		if (smoke_test)
+			initial.particle_count = 1000;
+		sph::SimulationConfig simulation_config;
+		app::VisualizationSettings visualization;
+		app::Camera camera;
+		camera.reset(initial.domain_size);
+		app::ParticleRenderer renderer;
+		sph::SimulationRunner runner(initial, simulation_config);
+		int requested_particle_count = static_cast<int>(initial.particle_count);
+		int requested_seed = static_cast<int>(initial.seed);
+		const char* field_names[] = {
+			"Density", "Energy", "Speed", "Acceleration",
+			"Velocity X", "Velocity Y", "Velocity Z"};
+		int selected_field = 0;
+
+		while (!glfwWindowShouldClose(window))
+		{
+			glfwPollEvents();
+			ImGui_ImplOpenGL3_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			ImGui::SetNextWindowSize(ImVec2(355.f, 650.f), ImGuiCond_FirstUseEver);
+			ImGui::SetNextWindowPos(ImVec2(16.f, 16.f), ImGuiCond_FirstUseEver);
+			ImGui::Begin("SPH Gas Cloud 3D");
+			const bool running = runner.is_running();
+			if (ImGui::Button(running ? "Pause" : "Run", ImVec2(90.f, 0.f)))
+				runner.set_running(!running);
+			ImGui::SameLine();
+			if (ImGui::Button("Step", ImVec2(90.f, 0.f)))
+				runner.request_single_step();
+			ImGui::SameLine();
+			if (ImGui::Button("Reset", ImVec2(90.f, 0.f)))
+			{
+				initial.particle_count = static_cast<std::size_t>(std::max(requested_particle_count, 1));
+				initial.seed = static_cast<std::uint32_t>(std::max(requested_seed, 0));
+				runner.request_reset(initial);
+				camera.reset(initial.domain_size);
+			}
+
+			if (ImGui::CollapsingHeader("Initial conditions", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::InputInt("Particles", &requested_particle_count, 1000, 10000);
+				requested_particle_count = std::clamp(requested_particle_count, 1, 1000000);
+				ImGui::InputInt("Seed", &requested_seed);
+				ImGui::SliderFloat("Domain size", &initial.domain_size, 10.f, 500.f, "%.1f");
+				ImGui::SliderFloat("Cloud radius", &initial.cloud_radius_fraction, 0.05f, 0.48f, "%.2f domain");
+				ImGui::InputFloat("Total mass", &initial.total_mass, 1000.f, 10000.f, "%.1f");
+				ImGui::SliderFloat("Angular speed", &initial.angular_speed, 0.f, 0.5f, "%.3f");
+			}
+
+			if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Checkbox("Hydrodynamics", &simulation_config.enable_hydrodynamics);
+				ImGui::SameLine();
+				ImGui::Checkbox("Gravity", &simulation_config.enable_gravity);
+				ImGui::SliderFloat("Maximum dt", &simulation_config.maximum_time_step, 1e-5f, 0.02f, "%.6f", ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderFloat("Gravity G", &simulation_config.gravitational_constant, 0.f, 0.01f, "%.6f");
+				ImGui::SliderFloat("Barnes-Hut theta", &simulation_config.barnes_hut_theta, 0.08f, 0.9f, "%.2f");
+				ImGui::SliderInt("Desired neighbors", &simulation_config.desired_neighbors, 16, 128);
+				ImGui::SliderFloat("Adiabatic gamma", &simulation_config.heat_capacity_ratio, 1.01f, 2.f, "%.3f");
+				ImGui::SliderFloat("Polytropic exponent", &simulation_config.polytropic_exponent, 1.01f, 2.f, "%.3f");
+				ImGui::SliderFloat("Polytropic strength", &simulation_config.polytropic_strength, 0.f, 1.f, "%.3f");
+				runner.set_config(simulation_config);
+			}
+
+			if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				if (ImGui::Combo("Field", &selected_field, field_names, IM_ARRAYSIZE(field_names)))
+					visualization.field = static_cast<sph::Field>(selected_field);
+				ImGui::SliderFloat("Brightness", &visualization.brightness, 0.05f, 5.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderFloat("Point size", &visualization.point_size, 1.f, 16.f, "%.1f px");
+				ImGui::Checkbox("Logarithmic color scale", &visualization.logarithmic_scale);
+				ImGui::Checkbox("Show initial domain", &visualization.show_domain_box);
+				ImGui::ColorEdit3("Background", visualization.background);
+				if (ImGui::Button("Reset camera"))
+					camera.reset(initial.domain_size);
+			}
+
+			const std::shared_ptr<const sph::SimulationSnapshot> snapshot = runner.snapshot();
+			if (snapshot && ImGui::CollapsingHeader("Telemetry", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Text("Particles: %zu", snapshot->particles.size());
+				ImGui::Text("Step: %llu   Time: %.6g", static_cast<unsigned long long>(snapshot->step), snapshot->total_time);
+				ImGui::Text("dt: %.4g", snapshot->last_time_step);
+				ImGui::Text("Step: %.2f ms   Prepare: %.2f ms", snapshot->step_milliseconds, snapshot->preparation_milliseconds);
+				ImGui::Text("Octree nodes: %zu", snapshot->octree_nodes);
+				ImGui::Text("Occupied hash cells: %zu", snapshot->occupied_cells);
+				ImGui::Text("Max density: %.5g", snapshot->maximum_density);
+				ImGui::Text("Max speed: %.5g", snapshot->maximum_speed);
+				ImGui::Text("Max acceleration: %.5g", snapshot->maximum_acceleration);
+				if (!snapshot->finite)
+					ImGui::TextColored(ImVec4(1.f, 0.25f, 0.2f, 1.f), "Non-finite state detected");
+			}
+			ImGui::Separator();
+			ImGui::TextDisabled("LMB: orbit   RMB/MMB: pan   Wheel: zoom   F: reset view");
+			ImGui::End();
+
+			if (!io.WantCaptureMouse)
+			{
+				if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.f))
+					camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
+				if (ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.f) ||
+					ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.f))
+					camera.pan(io.MouseDelta.x, io.MouseDelta.y, io.DisplaySize.y);
+				if (io.MouseWheel != 0.f)
+					camera.zoom(io.MouseWheel);
+			}
+			if (!io.WantCaptureKeyboard && ImGui::IsKeyPressed(ImGuiKey_F))
+				camera.reset(initial.domain_size);
+
+			ImGui::Render();
+			int framebuffer_width = 0;
+			int framebuffer_height = 0;
+			glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
+			glViewport(0, 0, framebuffer_width, framebuffer_height);
+			glClearColor(
+				visualization.background[0],
+				visualization.background[1],
+				visualization.background[2],
+				1.f);
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+			if (snapshot)
+				renderer.draw(
+					*snapshot,
+					camera,
+					visualization,
+					framebuffer_width,
+					framebuffer_height,
+					initial.domain_size);
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+			glfwSwapBuffers(window);
+			if (smoke_test)
+				glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
+	}
+	catch (const std::exception& exception)
+	{
+		std::fprintf(stderr, "Fatal application error: %s\n", exception.what());
+		exit_code = 1;
+	}
+
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
+	glfwDestroyWindow(window);
+	glfwTerminate();
+	return exit_code;
+}
+
+} // namespace
 
 int main(int argc, char** argv)
 {
 	if (argc > 1 && std::string(argv[1]) == "--self-test")
-		return RunNumericalSelfTests();
+		return run_numerical_self_tests();
 	if (argc > 1 && std::string(argv[1]) == "--headless")
 	{
-		const int steps = argc > 2 ? (std::max)(std::atoi(argv[2]), 1) : 10000;
-		const unsigned int seed = argc > 3 ? (unsigned int)std::strtoul(argv[3], nullptr, 10) : 1u;
-		return RunHeadlessSimulation(steps, seed);
+		const int steps = argc > 2 ? std::max(std::atoi(argv[2]), 1) : 100;
+		const std::uint32_t seed = argc > 3 ?
+			static_cast<std::uint32_t>(std::strtoul(argv[3], nullptr, 10)) : 1u;
+		const std::size_t particles = argc > 4 ?
+			static_cast<std::size_t>(std::max(std::atoi(argv[4]), 1)) : 1000;
+		return run_headless(steps, seed, particles);
 	}
 	if (argc > 1 && std::string(argv[1]) == "--benchmark-preparation")
 	{
-		const int particles = argc > 2 ? (std::max)(std::atoi(argv[2]), 1) : 10000;
-		const int steps = argc > 3 ? std::atoi(argv[3]) : 5;
-		const current_float_t radius = argc > 4 ?
-			(std::max)(static_cast<current_float_t>(std::atof(argv[4])), 0.01f) :
-			2.5f;
-		return RunPreparationBenchmark(particles, steps, radius);
+		const int particles = argc > 2 ? std::max(std::atoi(argv[2]), 1) : 10000;
+		const int steps = argc > 3 ? std::atoi(argv[3]) : 0;
+		const float radius = argc > 4 ?
+			std::max(static_cast<float>(std::atof(argv[4])), 0.01f) : 2.5f;
+		return run_preparation_benchmark(particles, steps, radius);
 	}
-
-	if (1)
-		ShowWindow(GetConsoleWindow(), SW_SHOW);
-	SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-	InitASCIIMap();
-
-	srand(TIMESEED());
-	__glutInitWithExit(&argc, argv, mExit);
-	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
-	glutInitWindowSize(WINDXSIZE, WINDYSIZE);
-	glutCreateWindow(WINDOWTITLE);
-
-	//if (APRIL_FOOL || true)
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE);//_MINUS_SRC_ALPHA
-	//else
-		//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);//_MINUS_SRC_ALPHA
-	glEnable(GL_BLEND);
-	//glEnable(GL_POLYGON_SMOOTH);//laggy af
-	glEnable(GL_LINE_SMOOTH);//GL_POLYGON_SMOOTH
-	glEnable(GL_POINT_SMOOTH);
-
-	glShadeModel(GL_SMOOTH);
-
-	glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);//GL_FASTEST//GL_NICEST
-	glHint(GL_POINT_SMOOTH_HINT, GL_NICEST);
-	glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST);
-
-	glutMouseFunc(mClick);
-	glutReshapeFunc(OnResize);
-	glutSpecialFunc(mSpecialKey);
-	glutMotionFunc(mDrag);
-	glutPassiveMotionFunc(mMotion);
-	glutKeyboardFunc(mKey);
-	glutDisplayFunc(mDisplay);
-	mInit();
-	glutMainLoop();
-	return 0;
+	if (argc > 1 && std::string(argv[1]) == "--gui-smoke-test")
+		return run_gui(true);
+	return run_gui();
 }
