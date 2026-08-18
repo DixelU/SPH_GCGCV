@@ -3065,11 +3065,165 @@ struct SPHAdapter : FieldAdapter
 		ext_draw(false)
 	{
 	}
+
+	inline static int ResolveSampleDepth(
+		int requested_depth,
+		float rendered_side_pixels,
+		float minimum_cell_pixels)
+	{
+		int depth = (std::clamp)(requested_depth, 0, 24);
+		const float usable_cell_count = rendered_side_pixels /
+			(std::max)(minimum_cell_pixels, 1.f);
+		while (depth > 0 && std::ldexp(1.f, depth) > usable_cell_count)
+			depth--;
+		return depth;
+	}
+
+	void DrawSampledGrid()
+	{
+		if (!gep || !gep->current.root_node || RANGE <= 0.f)
+			return;
+
+		node* root = gep->current.root_node;
+		const current_float_t simulation_side =
+			root->righttop_corner[0] - root->leftbottom_corner[0];
+		if (!(simulation_side > 0.f) || !(side_size > 0.f))
+			return;
+
+		const float pixels_per_render_unit =
+			(static_cast<float>((std::min)(WINDXSIZE, WINDYSIZE))) /
+			(2.f * RANGE);
+		const int sample_depth = ResolveSampleDepth(
+			draw_level,
+			std::abs(side_size) * pixels_per_render_unit,
+			pixel_size);
+		const uint32_t cells_per_side = uint32_t{1} << sample_depth;
+		const current_float_t relative_size = side_size / simulation_side;
+		const point render_center{x, y};
+		const point render_leftbottom =
+			root->leftbottom_corner * relative_size + render_center;
+		const point render_righttop =
+			root->righttop_corner * relative_size + render_center;
+		const current_float_t render_cell_size =
+			side_size / cells_per_side;
+
+		// Only evaluate cells intersecting the viewport. This keeps zoomed-in
+		// rendering proportional to visible pixels rather than to the full
+		// (mostly off-screen) dyadic grid.
+		const current_float_t view_half_width =
+			RANGE * (WindX / WINDXSIZE);
+		const current_float_t view_half_height =
+			RANGE * (WindY / WINDYSIZE);
+		const point view_leftbottom{
+			-view_half_width - centx,
+			-view_half_height - centy};
+		const point view_righttop{
+			view_half_width - centx,
+			view_half_height - centy};
+		const point clipped_leftbottom{
+			(std::max)(render_leftbottom[0], view_leftbottom[0]),
+			(std::max)(render_leftbottom[1], view_leftbottom[1])};
+		const point clipped_righttop{
+			(std::min)(render_righttop[0], view_righttop[0]),
+			(std::min)(render_righttop[1], view_righttop[1])};
+		if (clipped_leftbottom[0] >= clipped_righttop[0] ||
+			clipped_leftbottom[1] >= clipped_righttop[1])
+			return;
+
+		auto first_intersecting_cell = [&](current_float_t coordinate, int axis)
+		{
+			return static_cast<uint32_t>((std::clamp)(
+				static_cast<int64_t>(std::floor(
+					(coordinate - render_leftbottom[axis]) /
+					render_cell_size)),
+				int64_t{0},
+				static_cast<int64_t>(cells_per_side)));
+		};
+		auto past_last_intersecting_cell = [&](current_float_t coordinate, int axis)
+		{
+			return static_cast<uint32_t>((std::clamp)(
+				static_cast<int64_t>(std::ceil(
+					(coordinate - render_leftbottom[axis]) /
+					render_cell_size)),
+				int64_t{0},
+				static_cast<int64_t>(cells_per_side)));
+		};
+		const uint32_t x_begin = first_intersecting_cell(
+			clipped_leftbottom[0], 0);
+		const uint32_t x_end = past_last_intersecting_cell(
+			clipped_righttop[0], 0);
+		const uint32_t y_begin = first_intersecting_cell(
+			clipped_leftbottom[1], 1);
+		const uint32_t y_end = past_last_intersecting_cell(
+			clipped_righttop[1], 1);
+
+		const auto samples = gep->spatial_neighbors.sample_field_grid(
+			draw_type,
+			sample_depth,
+			x_begin,
+			x_end,
+			y_begin,
+			y_end);
+		glBegin(GL_QUADS);
+		for (uint32_t local_y = 0; local_y < samples.height; local_y++)
+			for (uint32_t local_x = 0; local_x < samples.width; local_x++)
+			{
+				const current_float_t value = samples.at(local_x, local_y);
+				if (value == 0.f || !std::isfinite(value))
+					continue;
+				const auto [red, green, blue] =
+					get_color(value * brightness);
+				glColor4f(red, green, blue, 1.f);
+
+				const uint32_t grid_x = samples.x_begin + local_x;
+				const uint32_t grid_y = samples.y_begin + local_y;
+				const current_float_t left = render_leftbottom[0] +
+					grid_x * render_cell_size;
+				const current_float_t bottom = render_leftbottom[1] +
+					grid_y * render_cell_size;
+				const current_float_t right = left + render_cell_size;
+				const current_float_t top = bottom + render_cell_size;
+				glVertex2f(left, bottom);
+				glVertex2f(right, bottom);
+				glVertex2f(right, top);
+				glVertex2f(left, top);
+			}
+		glEnd();
+	}
+
 	void Draw() override
 	{
-		gep->pre_swap.lock();
-		gep->current.draw(draw_level, {x,y}, side_size, pixel_size, brightness, draw_type, extra_flare, edge_drawer, point_drawer, ext_draw);
-		gep->pre_swap.unlock();
+		if (!gep)
+			return;
+		std::lock_guard<std::mutex> guard(gep->pre_swap);
+		if (ext_draw)
+		{
+			DrawSampledGrid();
+			if (edge_drawer || point_drawer)
+				gep->current.draw(
+					draw_level,
+					{x,y},
+					side_size,
+					pixel_size,
+					brightness,
+					draw_type,
+					extra_flare,
+					edge_drawer,
+					point_drawer,
+					true);
+		}
+		else
+			gep->current.draw(
+				draw_level,
+				{x,y},
+				side_size,
+				pixel_size,
+				brightness,
+				draw_type,
+				extra_flare,
+				edge_drawer,
+				point_drawer,
+				false);
 	}
 	BIT MouseHandler(float mx, float my, CHAR Button, CHAR State) override
 	{
@@ -3748,6 +3902,40 @@ int RunNumericalSelfTests()
 	check(
 		cached_fields_match_brute_force,
 		"cached SPH density and energy match symmetric brute force");
+
+	particle sampled_particle(
+		{0.f, 0.f},
+		{5.f, -6.f},
+		{7.f, -8.f},
+		3.f,
+		2.f,
+		4.f);
+	grav_eq_processor sampled_field_processor({sampled_particle}, 8.f);
+	sampled_field_processor.prepare_iteration();
+	auto sample_center = [&](draw_type::dt type)
+	{
+		return sampled_field_processor.spatial_neighbors.sample_field_grid(
+			type,
+			0).at(0, 0);
+	};
+	const current_float_t expected_sampled_density =
+		sampled_particle.mass * grav_eq_utils::pressure_core(0.f, sampled_particle.radius);
+	check(
+		nearly_equal(
+			sample_center(draw_type::dt::density),
+			expected_sampled_density,
+			1e-4f) &&
+		nearly_equal(sample_center(draw_type::dt::energy), 4.f) &&
+		nearly_equal(sample_center(draw_type::dt::x_speed), 5.f) &&
+		nearly_equal(sample_center(draw_type::dt::y_speed), -6.f) &&
+		nearly_equal(sample_center(draw_type::dt::x_acceleration), 7.f) &&
+		nearly_equal(sample_center(draw_type::dt::y_acceleration), -8.f),
+		"sampled grid evaluates SPH scalar and vector fields at cell centers");
+	check(
+		SPHAdapter::ResolveSampleDepth(15, 720.f, 2.f) == 8 &&
+		SPHAdapter::ResolveSampleDepth(5, 720.f, 2.f) == 5 &&
+		SPHAdapter::ResolveSampleDepth(-3, 720.f, 2.f) == 0,
+		"sampled grid depth follows draw depth and visible pixel size");
 
 	particle light_center({-1.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, 2.f, 0.5f, 1.f);
 	particle heavy_center = light_center;

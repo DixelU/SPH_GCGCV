@@ -354,6 +354,22 @@ struct grav_eq_iteration_buffers
 
 struct sph_neighbor_grid
 {
+	struct sampled_field_grid
+	{
+		uint32_t cells_per_side = 1;
+		uint32_t x_begin = 0;
+		uint32_t y_begin = 0;
+		uint32_t width = 0;
+		uint32_t height = 0;
+		current_float_t cell_size = 0.f;
+		std::vector<current_float_t> values;
+
+		inline current_float_t at(uint32_t x, uint32_t y) const
+		{
+			return values[static_cast<size_t>(y) * width + x];
+		}
+	};
+
 	struct grid_entry
 	{
 		uint64_t key;
@@ -848,6 +864,157 @@ struct sph_neighbor_grid
 	{
 		return cached_energies[source->spatial_index];
 	}
+
+	inline sampled_field_grid sample_field_grid(
+		draw_type::dt type,
+		int requested_depth,
+		uint32_t requested_x_begin = 0,
+		uint32_t requested_x_end = invalid_index,
+		uint32_t requested_y_begin = 0,
+		uint32_t requested_y_end = invalid_index) const
+	{
+		// Keep the grid dyadic so a sample cell exactly matches a quadtree cell
+		// at the same depth. 24 also keeps the cell count representable by the
+		// coordinate encoding used by the neighbour grid.
+		const int depth = (std::clamp)(requested_depth, 0, 24);
+		const uint32_t cells_per_side = uint32_t{1} << depth;
+		const uint32_t x_begin = (std::min)(
+			requested_x_begin,
+			cells_per_side);
+		const uint32_t y_begin = (std::min)(
+			requested_y_begin,
+			cells_per_side);
+		const uint32_t x_end = (std::min)(
+			requested_x_end,
+			cells_per_side);
+		const uint32_t y_end = (std::min)(
+			requested_y_end,
+			cells_per_side);
+
+		sampled_field_grid result;
+		result.cells_per_side = cells_per_side;
+		result.x_begin = x_begin;
+		result.y_begin = y_begin;
+		result.width = x_end > x_begin ? x_end - x_begin : 0;
+		result.height = y_end > y_begin ? y_end - y_begin : 0;
+		result.cell_size = domain_size / cells_per_side;
+		result.values.assign(
+			static_cast<size_t>(result.width) * result.height,
+			0.f);
+		if (!result.width || !result.height ||
+			particle_nodes.empty() || domain_size <= 0.f)
+			return result;
+
+		auto first_sample_at_or_after = [&](current_float_t coordinate)
+		{
+			return static_cast<int64_t>(std::ceil(
+				(coordinate - domain_leftbottom[0]) / result.cell_size -
+				0.5f));
+		};
+		auto last_sample_at_or_before = [&](current_float_t coordinate)
+		{
+			return static_cast<int64_t>(std::floor(
+				(coordinate - domain_leftbottom[0]) / result.cell_size -
+				0.5f));
+		};
+
+		for (uint32_t particle_index = 0;
+			particle_index < particle_nodes.size();
+			particle_index++)
+		{
+			const particle& source =
+				particle_nodes[particle_index]->mass_center;
+			if (!(source.radius > 0.f) || !std::isfinite(source.radius))
+				continue;
+
+			current_float_t sampled_property = 1.f;
+			if (type != draw_type::dt::density)
+			{
+				if (particle_index >= cached_densities.size() ||
+					!(cached_densities[particle_index] > 0.f))
+					continue;
+				switch (type)
+				{
+					case draw_type::dt::energy:
+						sampled_property = source.energy;
+						break;
+					case draw_type::dt::x_speed:
+						sampled_property = source.velocity[0];
+						break;
+					case draw_type::dt::y_speed:
+						sampled_property = source.velocity[1];
+						break;
+					case draw_type::dt::x_acceleration:
+						sampled_property = source.acceleration[0];
+						break;
+					case draw_type::dt::y_acceleration:
+						sampled_property = source.acceleration[1];
+						break;
+					default:
+						break;
+				}
+			}
+
+			const current_float_t coefficient =
+				type == draw_type::dt::density ?
+				source.mass :
+				(source.mass / cached_densities[particle_index]) *
+					sampled_property;
+			if (coefficient == 0.f || !std::isfinite(coefficient))
+				continue;
+
+			const int64_t particle_x_begin = (std::max)(
+				first_sample_at_or_after(
+					source.position[0] - source.radius),
+				static_cast<int64_t>(x_begin));
+			const int64_t particle_x_end = (std::min)(
+				last_sample_at_or_before(
+					source.position[0] + source.radius) + 1,
+				static_cast<int64_t>(x_end));
+
+			// The domain is square, so the same origin and spacing apply to Y.
+			const int64_t particle_y_begin = (std::max)(
+				static_cast<int64_t>(std::ceil(
+					(source.position[1] - source.radius -
+						domain_leftbottom[1]) / result.cell_size - 0.5f)),
+				static_cast<int64_t>(y_begin));
+			const int64_t particle_y_end = (std::min)(
+				static_cast<int64_t>(std::floor(
+					(source.position[1] + source.radius -
+						domain_leftbottom[1]) / result.cell_size - 0.5f)) + 1,
+				static_cast<int64_t>(y_end));
+			if (particle_x_begin >= particle_x_end ||
+				particle_y_begin >= particle_y_end)
+				continue;
+
+			for (int64_t y = particle_y_begin; y < particle_y_end; y++)
+			{
+				const current_float_t sample_y = domain_leftbottom[1] +
+					(static_cast<current_float_t>(y) + 0.5f) *
+					result.cell_size;
+				for (int64_t x = particle_x_begin; x < particle_x_end; x++)
+				{
+					const current_float_t sample_x = domain_leftbottom[0] +
+						(static_cast<current_float_t>(x) + 0.5f) *
+						result.cell_size;
+					const current_float_t weight =
+						grav_eq_utils::pressure_core(
+							point{
+								sample_x - source.position[0],
+								sample_y - source.position[1]},
+							source.radius);
+					if (weight == 0.f)
+						continue;
+					result.values[
+						static_cast<size_t>(y - y_begin) * result.width +
+						static_cast<size_t>(x - x_begin)] +=
+						coefficient * weight;
+				}
+			}
+		}
+
+		return result;
+	}
 };
 
 struct quad_tree
@@ -1023,15 +1190,10 @@ prp_ending:
 						glVertex2f(_x(rt), _y(lb));
 						glEnd();
 					}
-					if (extended_draw)
-					{
-						draw_smooth_circle(_x(position), _y(position),
-							cur_node.first->mass_center.radius * relative_size,
-							particle_value * value_decrimemnt,
-							1.10f, 15
-						);
-					}
-					else
+					// The extended mode is drawn as a sampled SPH grid by the
+					// adapter. Keep this traversal only for optional quadtree-edge
+					// and particle-point overlays.
+					if (!extended_draw)
 					{
 						auto [pr, pg, pb] = get_color(particle_value * value_decrimemnt);
 						auto a = (pr + pg + pb) * 0.15f;
@@ -1775,9 +1937,11 @@ struct grav_eq_processor
 			pre_swap.lock();
 			current.clear();
 			current.swap(buffer);
-			pre_swap.unlock();
-
+			// The sampled renderer reads the neighbour grid as well as the
+			// current tree. Publish both under the same lock so a frame cannot
+			// observe a new tree paired with a half-built sampling index.
 			subdivide_tree();
+			pre_swap.unlock();
 
 			for (auto ptr : threads)
 				ptr->sign_awaiting();
