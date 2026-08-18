@@ -37,6 +37,7 @@ struct VisualizationSettings
 	float point_size = 4.f;
 	float background[3]{0.012f, 0.016f, 0.028f};
 	bool logarithmic_scale = true;
+	bool invert_color_map = false;
 	bool show_domain_box = true;
 };
 

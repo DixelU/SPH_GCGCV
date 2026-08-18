@@ -90,10 +90,14 @@ int run_numerical_self_tests()
 					.energy = 1.f,
 					.cfl_time = 1.f,
 					.interaction_count = 1});
-	sph::SimulationConfig no_forces;
-	no_forces.enable_gravity = false;
-	no_forces.enable_hydrodynamics = false;
-	sph::Simulation3D lattice_simulation(lattice, 16.f, no_forces);
+	// Exercise unequal supports as well as the common uniform-h case. This is
+	// important for the pair-ownership rule in the cached neighbor graph.
+	for (std::size_t index = 0; index < lattice.size(); ++index)
+		if (index % 11 == 0)
+			lattice[index].smoothing_length = 4.1f;
+	sph::SimulationConfig hydro_only;
+	hydro_only.enable_gravity = false;
+	sph::Simulation3D lattice_simulation(lattice, 16.f, hydro_only);
 	lattice_simulation.prepare();
 	bool densities_match = true;
 	for (std::size_t first = 0; first < lattice.size(); ++first)
@@ -101,19 +105,23 @@ int run_numerical_self_tests()
 		float brute_density = 0.f;
 		for (const sph::Particle& second : lattice)
 		{
-			const float support = std::max(
-				lattice[first].smoothing_length,
-				second.smoothing_length);
 			brute_density += second.mass * sph::wendland_c2(
 				lattice[first].position - second.position,
-				support);
+				lattice[first].smoothing_length);
 		}
 		densities_match = densities_match && nearly_equal(
 			lattice_simulation.densities()[first],
 			brute_density,
 			1e-4f * std::max(1.f, brute_density));
 	}
-	check(densities_match, "3D spatial hash density matches brute force");
+	check(densities_match, "directed SPH density matches brute force with unequal supports");
+	check(
+		lattice_simulation.make_snapshot().smoothing_length_floor > 0.1f,
+		"minimum smoothing length scales with the initial particle resolution");
+
+	sph::SimulationConfig no_forces;
+	no_forces.enable_gravity = false;
+	no_forces.enable_hydrodynamics = false;
 
 	sph::Particle light{
 		.position = {-1.f, 0.f, 0.5f}, .mass = 2.f, .smoothing_length = 0.5f};
@@ -149,6 +157,11 @@ int run_numerical_self_tests()
 		nearly_equal(inertial_result.position[2], 3.05f) &&
 		(inertial_result.velocity - inertial.velocity).get_norm2() == 0.f,
 		"3D symplectic integrator drifts an inertial particle exactly once");
+	check(
+		nearly_equal(inertial_result.smoothing_length, inertial.smoothing_length) &&
+		nearly_equal(inertial_result.energy, inertial.energy) &&
+		inertial_simulation.occupied_cell_count() == 0,
+		"hydrodynamics-off steps preserve SPH state and skip the neighbor grid");
 
 	sph::SimulationConfig gravity_only;
 	gravity_only.enable_hydrodynamics = false;
@@ -188,14 +201,28 @@ int run_numerical_self_tests()
 	return failures ? 1 : 0;
 }
 
-int run_headless(int steps, std::uint32_t seed, std::size_t particle_count)
+int run_headless(
+	int steps,
+	std::uint32_t seed,
+	std::size_t particle_count,
+	bool enable_hydrodynamics,
+	bool enable_gravity)
 {
 	sph::InitialConditions initial;
 	initial.particle_count = particle_count;
 	initial.seed = seed;
+	sph::SimulationConfig config;
+	config.enable_hydrodynamics = enable_hydrodynamics;
+	config.enable_gravity = enable_gravity;
 	sph::Simulation3D simulation(
 		sph::make_rotating_cloud(initial),
-		initial.domain_size);
+		initial.domain_size,
+		config);
+	std::printf(
+		"mode hydro=%d gravity=%d particles=%zu\n",
+		enable_hydrodynamics ? 1 : 0,
+		enable_gravity ? 1 : 0,
+		particle_count);
 	const int report_interval = std::max(steps / 10, 1);
 	for (int step = 0; step < steps; ++step)
 	{
@@ -209,16 +236,26 @@ int run_headless(int steps, std::uint32_t seed, std::size_t particle_count)
 			const auto snapshot = simulation.make_snapshot(elapsed_ms);
 			std::printf(
 				"step=%llu time=%.7g dt=%.7g particles=%zu step_ms=%.3f prep_ms=%.3f "
-				"max_rho=%.7g max_v=%.7g max_a=%.7g P=(%.8g,%.8g,%.8g) finite=%d\n",
+				"tree_ms=%.3f graph_ms=%.3f density_ms=%.3f force_ms=%.3f "
+				"max_rho=%.7g max_v=%.7g max_a=%.7g h_min=%.5g h_floor=%.5g "
+				"max_cs=%.5g mean_n=%.2f P=(%.8g,%.8g,%.8g) finite=%d\n",
 				static_cast<unsigned long long>(snapshot.step),
 				snapshot.total_time,
 				snapshot.last_time_step,
 				snapshot.particles.size(),
 				snapshot.step_milliseconds,
 				snapshot.preparation_milliseconds,
+				snapshot.octree_milliseconds,
+				snapshot.neighbor_graph_milliseconds,
+				snapshot.density_milliseconds,
+				snapshot.force_milliseconds,
 				snapshot.maximum_density,
 				snapshot.maximum_speed,
 				snapshot.maximum_acceleration,
+				snapshot.minimum_smoothing_length,
+				snapshot.smoothing_length_floor,
+				snapshot.maximum_sound_speed,
+				snapshot.average_interactions,
 				snapshot.momentum[0],
 				snapshot.momentum[1],
 				snapshot.momentum[2],
@@ -268,12 +305,17 @@ int run_preparation_benchmark(int requested_particles, int requested_steps, floa
 	const auto snapshot = simulation.make_snapshot();
 	std::printf(
 		"particles=%zu steps=%d radius=%.3f average_ms=%.3f prep_ms=%.3f "
+		"tree_ms=%.3f graph_ms=%.3f density_ms=%.3f force_ms=%.3f "
 		"octree_nodes=%zu occupied_cells=%zu\n",
 		snapshot.particles.size(),
 		requested_steps > 0 ? runs : 0,
 		radius_in_spacings,
 		elapsed_ms / runs,
 		snapshot.preparation_milliseconds,
+		snapshot.octree_milliseconds,
+		snapshot.neighbor_graph_milliseconds,
+		snapshot.density_milliseconds,
+		snapshot.force_milliseconds,
 		snapshot.octree_nodes,
 		snapshot.occupied_cells);
 	return 0;
@@ -363,7 +405,7 @@ int run_gui(bool smoke_test = false)
 				ImGui::InputInt("Particles", &requested_particle_count, 1000, 10000);
 				requested_particle_count = std::clamp(requested_particle_count, 1, 1000000);
 				ImGui::InputInt("Seed", &requested_seed);
-				ImGui::SliderFloat("Domain size", &initial.domain_size, 10.f, 500.f, "%.1f");
+				ImGui::SliderFloat("Domain size", &initial.domain_size, 10.f, 5000.f, "%.1f", ImGuiSliderFlags_Logarithmic);
 				ImGui::SliderFloat("Cloud radius", &initial.cloud_radius_fraction, 0.05f, 0.48f, "%.2f domain");
 				ImGui::InputFloat("Total mass", &initial.total_mass, 1000.f, 10000.f, "%.1f");
 				ImGui::SliderFloat("Angular speed", &initial.angular_speed, 0.f, 0.5f, "%.3f");
@@ -374,9 +416,16 @@ int run_gui(bool smoke_test = false)
 				ImGui::Checkbox("Hydrodynamics", &simulation_config.enable_hydrodynamics);
 				ImGui::SameLine();
 				ImGui::Checkbox("Gravity", &simulation_config.enable_gravity);
-				ImGui::SliderFloat("Maximum dt", &simulation_config.maximum_time_step, 1e-5f, 0.02f, "%.6f", ImGuiSliderFlags_Logarithmic);
-				ImGui::SliderFloat("Gravity G", &simulation_config.gravitational_constant, 0.f, 0.01f, "%.6f");
+				ImGui::SliderFloat("Maximum dt", &simulation_config.maximum_time_step, 1e-5f, 10.f, "%.6f", ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderFloat("Gravity G", &simulation_config.gravitational_constant, 0.f, 0.1f, "%.6f");
 				ImGui::SliderFloat("Barnes-Hut theta", &simulation_config.barnes_hut_theta, 0.08f, 0.9f, "%.2f");
+				ImGui::SliderFloat(
+					"Minimum h / initial h",
+					&simulation_config.minimum_smoothing_fraction,
+					0.005f,
+					0.2f,
+					"%.3f",
+					ImGuiSliderFlags_Logarithmic);
 				ImGui::SliderInt("Desired neighbors", &simulation_config.desired_neighbors, 16, 128);
 				ImGui::SliderFloat("Adiabatic gamma", &simulation_config.heat_capacity_ratio, 1.01f, 2.f, "%.3f");
 				ImGui::SliderFloat("Polytropic exponent", &simulation_config.polytropic_exponent, 1.01f, 2.f, "%.3f");
@@ -388,9 +437,10 @@ int run_gui(bool smoke_test = false)
 			{
 				if (ImGui::Combo("Field", &selected_field, field_names, IM_ARRAYSIZE(field_names)))
 					visualization.field = static_cast<sph::Field>(selected_field);
-				ImGui::SliderFloat("Brightness", &visualization.brightness, 0.05f, 5.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderFloat("Brightness", &visualization.brightness, 0.0005f, 500.f, "%.2f", ImGuiSliderFlags_Logarithmic);
 				ImGui::SliderFloat("Point size", &visualization.point_size, 1.f, 16.f, "%.1f px");
 				ImGui::Checkbox("Logarithmic color scale", &visualization.logarithmic_scale);
+				ImGui::Checkbox("Invert color map", &visualization.invert_color_map);
 				ImGui::Checkbox("Show initial domain", &visualization.show_domain_box);
 				ImGui::ColorEdit3("Background", visualization.background);
 				if (ImGui::Button("Reset camera"))
@@ -404,11 +454,25 @@ int run_gui(bool smoke_test = false)
 				ImGui::Text("Step: %llu   Time: %.6g", static_cast<unsigned long long>(snapshot->step), snapshot->total_time);
 				ImGui::Text("dt: %.4g", snapshot->last_time_step);
 				ImGui::Text("Step: %.2f ms   Prepare: %.2f ms", snapshot->step_milliseconds, snapshot->preparation_milliseconds);
+				ImGui::Text("Tree %.2f   Neighbors %.2f   Density %.2f   Forces %.2f ms",
+					snapshot->octree_milliseconds,
+					snapshot->neighbor_graph_milliseconds,
+					snapshot->density_milliseconds,
+					snapshot->force_milliseconds);
 				ImGui::Text("Octree nodes: %zu", snapshot->octree_nodes);
 				ImGui::Text("Occupied hash cells: %zu", snapshot->occupied_cells);
 				ImGui::Text("Max density: %.5g", snapshot->maximum_density);
 				ImGui::Text("Max speed: %.5g", snapshot->maximum_speed);
 				ImGui::Text("Max acceleration: %.5g", snapshot->maximum_acceleration);
+				ImGui::Text(
+					"h: %.4g .. %.4g   floor %.4g",
+					snapshot->minimum_smoothing_length,
+					snapshot->maximum_smoothing_length,
+					snapshot->smoothing_length_floor);
+				ImGui::Text(
+					"Max sound speed: %.5g   Mean neighbors: %.1f",
+					snapshot->maximum_sound_speed,
+					snapshot->average_interactions);
 				if (!snapshot->finite)
 					ImGui::TextColored(ImVec4(1.f, 0.25f, 0.2f, 1.f), "Non-finite state detected");
 			}
@@ -481,7 +545,9 @@ int main(int argc, char** argv)
 			static_cast<std::uint32_t>(std::strtoul(argv[3], nullptr, 10)) : 1u;
 		const std::size_t particles = argc > 4 ?
 			static_cast<std::size_t>(std::max(std::atoi(argv[4]), 1)) : 1000;
-		return run_headless(steps, seed, particles);
+		const bool hydrodynamics = argc > 5 ? std::atoi(argv[5]) != 0 : true;
+		const bool gravity = argc > 6 ? std::atoi(argv[6]) != 0 : true;
+		return run_headless(steps, seed, particles, hydrodynamics, gravity);
 	}
 	if (argc > 1 && std::string(argv[1]) == "--benchmark-preparation")
 	{

@@ -6,25 +6,33 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 namespace sph
 {
 namespace
 {
 
-template <class Function>
-void parallel_for_blocks(std::size_t count, Function&& function)
+[[nodiscard]] std::size_t parallel_worker_count(std::size_t count)
 {
-	if (count == 0)
-		return;
 	constexpr std::size_t minimum_items_per_worker = 1024;
 	const std::size_t available_workers = std::max(1u, std::thread::hardware_concurrency());
 	const std::size_t useful_workers =
 		std::max<std::size_t>(1, (count + minimum_items_per_worker - 1) / minimum_items_per_worker);
-	const std::size_t worker_count = std::min(available_workers, useful_workers);
+	return std::min(available_workers, useful_workers);
+}
+
+template <class Function>
+void parallel_for_blocks_indexed(
+	std::size_t count,
+	std::size_t worker_count,
+	Function&& function)
+{
+	if (count == 0)
+		return;
 	if (worker_count == 1)
 	{
-		function(std::size_t{0}, count);
+		function(std::size_t{0}, count, std::size_t{0});
 		return;
 	}
 
@@ -36,10 +44,23 @@ void parallel_for_blocks(std::size_t count, Function&& function)
 		{
 			function(
 				count * worker / worker_count,
-				count * (worker + 1) / worker_count);
+				count * (worker + 1) / worker_count,
+				worker);
 		});
 	}
-	function(0, count / worker_count);
+	function(0, count / worker_count, 0);
+}
+
+template <class Function>
+void parallel_for_blocks(std::size_t count, Function&& function)
+{
+	parallel_for_blocks_indexed(
+		count,
+		parallel_worker_count(count),
+		[&](std::size_t begin, std::size_t end, std::size_t)
+		{
+			function(begin, end);
+		});
 }
 
 [[nodiscard]] bool finite(const Vec3& value)
@@ -163,10 +184,18 @@ void Simulation3D::NeighborGrid::build(
 	const std::vector<Particle>& particles,
 	scalar fallback_cell_size)
 {
-	cell_size_ = std::max(fallback_cell_size, numerical_epsilon);
+	std::vector<scalar> smoothing_lengths;
+	smoothing_lengths.reserve(particles.size());
 	for (const Particle& particle : particles)
-		if (std::isfinite(particle.smoothing_length))
-			cell_size_ = std::max(cell_size_, particle.smoothing_length);
+		if (std::isfinite(particle.smoothing_length) && particle.smoothing_length > 0.f)
+			smoothing_lengths.push_back(particle.smoothing_length);
+	cell_size_ = std::max(fallback_cell_size, numerical_epsilon);
+	if (!smoothing_lengths.empty())
+	{
+		const auto median = smoothing_lengths.begin() + smoothing_lengths.size() / 2;
+		std::nth_element(smoothing_lengths.begin(), median, smoothing_lengths.end());
+		cell_size_ = std::max(cell_size_, *median);
+	}
 	cells_.clear();
 	cells_.reserve(particles.size());
 	for (std::uint32_t index = 0; index < particles.size(); ++index)
@@ -175,18 +204,111 @@ void Simulation3D::NeighborGrid::build(
 
 void Simulation3D::NeighborGrid::collect(
 	const Vec3& position,
+	scalar radius,
 	std::vector<std::uint32_t>& result) const
 {
 	result.clear();
 	const CellKey center = key_for(position);
-	for (std::int64_t z = -1; z <= 1; ++z)
-		for (std::int64_t y = -1; y <= 1; ++y)
-			for (std::int64_t x = -1; x <= 1; ++x)
+	const std::int64_t reach = std::max<std::int64_t>(
+		1,
+		static_cast<std::int64_t>(std::ceil(std::max(radius, 0.f) / cell_size_)));
+	for (std::int64_t z = -reach; z <= reach; ++z)
+		for (std::int64_t y = -reach; y <= reach; ++y)
+			for (std::int64_t x = -reach; x <= reach; ++x)
 			{
 				const auto found = cells_.find({center.x + x, center.y + y, center.z + z});
 				if (found != cells_.end())
 					result.insert(result.end(), found->second.begin(), found->second.end());
 			}
+}
+
+void Simulation3D::build_neighbor_graph()
+{
+	neighbor_grid_.build(particles_, minimum_smoothing_length());
+	const std::size_t worker_count = parallel_worker_count(particles_.size());
+	using neighbor_pair = std::pair<std::uint32_t, std::uint32_t>;
+	std::vector<std::vector<neighbor_pair>> pair_partitions(worker_count);
+	parallel_for_blocks_indexed(
+		particles_.size(),
+		worker_count,
+		[&](std::size_t block_begin, std::size_t block_end, std::size_t worker)
+		{
+			auto& pairs = pair_partitions[worker];
+			pairs.clear();
+			pairs.reserve(
+				(block_end - block_begin) *
+				static_cast<std::size_t>(config_.desired_neighbors) / 2);
+			std::vector<std::uint32_t> candidates;
+			candidates.reserve(static_cast<std::size_t>(config_.desired_neighbors) * 2);
+			for (std::uint32_t source_index = static_cast<std::uint32_t>(block_begin);
+				source_index < block_end;
+				++source_index)
+			{
+				const Particle& source = particles_[source_index];
+				neighbor_grid_.collect(
+					source.position,
+					source.smoothing_length,
+					candidates);
+				for (std::uint32_t candidate_index : candidates)
+				{
+					if (candidate_index == source_index)
+						continue;
+					const Particle& candidate = particles_[candidate_index];
+					// The particle with the larger support owns the pair. Equal
+					// supports use index order. This discovers max(h_i, h_j)
+					// interactions exactly once without making a single outlier
+					// inflate every spatial-hash bucket.
+					if (source.smoothing_length < candidate.smoothing_length ||
+						(source.smoothing_length == candidate.smoothing_length &&
+							source_index > candidate_index))
+						continue;
+					const Vec3 displacement = source.position - candidate.position;
+					if (displacement.get_norm2() <=
+						source.smoothing_length * source.smoothing_length)
+						pairs.emplace_back(source_index, candidate_index);
+				}
+			}
+		});
+
+	std::vector<std::uint32_t> degrees(particles_.size(), 1);
+	for (const auto& partition : pair_partitions)
+		for (const auto& [first, second] : partition)
+		{
+			++degrees[first];
+			++degrees[second];
+		}
+	neighbor_offsets_.assign(particles_.size() + 1, 0);
+	for (std::size_t index = 0; index < particles_.size(); ++index)
+		neighbor_offsets_[index + 1] = neighbor_offsets_[index] + degrees[index];
+	neighbors_.resize(neighbor_offsets_.back());
+	neighbor_weights_.resize(neighbor_offsets_.back());
+	std::vector<std::uint32_t> cursors(
+		neighbor_offsets_.begin(),
+		neighbor_offsets_.end() - 1);
+	for (std::uint32_t index = 0; index < particles_.size(); ++index)
+	{
+		const std::uint32_t offset = cursors[index]++;
+		neighbors_[offset] = index;
+		neighbor_weights_[offset] = wendland_c2(0.f, particles_[index].smoothing_length);
+	}
+	for (const auto& partition : pair_partitions)
+		for (const auto& [first, second] : partition)
+		{
+			const scalar distance = (
+				particles_[first].position - particles_[second].position).get_norm();
+			const std::uint32_t first_offset = cursors[first]++;
+			const std::uint32_t second_offset = cursors[second]++;
+			neighbors_[first_offset] = second;
+			neighbors_[second_offset] = first;
+			// Density is a directed estimate: rho_i uses h_i. The symmetric
+			// graph is only a broad-phase superset needed by both endpoints.
+			neighbor_weights_[first_offset] = wendland_c2(
+				distance,
+				particles_[first].smoothing_length);
+			neighbor_weights_[second_offset] = wendland_c2(
+				distance,
+				particles_[second].smoothing_length);
+		}
 }
 
 Simulation3D::Simulation3D(
@@ -197,6 +319,21 @@ Simulation3D::Simulation3D(
 	config_(config),
 	reference_domain_size_(std::max(reference_domain_size, 1.f))
 {
+	std::vector<scalar> initial_smoothing_lengths;
+	initial_smoothing_lengths.reserve(particles_.size());
+	for (const Particle& particle : particles_)
+		if (std::isfinite(particle.smoothing_length) && particle.smoothing_length > 0.f)
+			initial_smoothing_lengths.push_back(particle.smoothing_length);
+	if (!initial_smoothing_lengths.empty())
+	{
+		const auto median = initial_smoothing_lengths.begin() +
+			initial_smoothing_lengths.size() / 2;
+		std::nth_element(
+			initial_smoothing_lengths.begin(),
+			median,
+			initial_smoothing_lengths.end());
+		reference_smoothing_length_ = *median;
+	}
 	set_config(config);
 }
 
@@ -210,6 +347,10 @@ void Simulation3D::set_config(const SimulationConfig& config)
 	config_.polytropic_strength = std::max(config_.polytropic_strength, 0.f);
 	config_.barnes_hut_theta = std::clamp(config_.barnes_hut_theta, 0.05f, 1.f);
 	config_.courant_number = std::clamp(config_.courant_number, 0.01f, 0.9f);
+	config_.minimum_smoothing_fraction = std::clamp(
+		config_.minimum_smoothing_fraction,
+		0.001f,
+		0.5f);
 	config_.desired_neighbors = std::clamp(config_.desired_neighbors, 8, 256);
 }
 
@@ -225,7 +366,10 @@ std::size_t Simulation3D::occupied_cell_count() const noexcept
 
 scalar Simulation3D::minimum_smoothing_length() const noexcept
 {
-	return numerical_epsilon * reference_domain_size_ * 0.1f;
+	const scalar absolute_floor = numerical_epsilon * reference_domain_size_ * 0.1f;
+	const scalar resolution_floor =
+		config_.minimum_smoothing_fraction * reference_smoothing_length_;
+	return std::max(absolute_floor, resolution_floor);
 }
 
 void Simulation3D::build_octree()
@@ -346,7 +490,7 @@ Vec3 Simulation3D::pair_gravity(
 	const scalar softened_distance_squared =
 		displacement.get_norm2() + softening * softening;
 	return gravitational_constant * source.mass * displacement /
-		std::pow(softened_distance_squared, 1.5f);
+		(softened_distance_squared * std::sqrt(softened_distance_squared));
 }
 
 Vec3 Simulation3D::gravity_for(
@@ -389,11 +533,13 @@ Vec3 Simulation3D::gravity_for(
 		if (!contains_target && distance_squared > 0.f &&
 			width * width < config_.barnes_hut_theta * config_.barnes_hut_theta * distance_squared)
 		{
-			Particle aggregate;
-			aggregate.position = node.center_of_mass;
-			aggregate.mass = node.mass;
-			aggregate.smoothing_length = node.maximum_smoothing_length;
-			acceleration += pair_gravity(target, aggregate, config_.gravitational_constant);
+			const scalar softening = std::max(
+				0.5f * (node.maximum_smoothing_length + target.smoothing_length),
+				numerical_epsilon);
+			const scalar softened_distance_squared =
+				distance_squared + softening * softening;
+			acceleration += config_.gravitational_constant * node.mass * displacement /
+				(softened_distance_squared * std::sqrt(softened_distance_squared));
 		}
 		else
 		{
@@ -417,44 +563,82 @@ scalar Simulation3D::pressure_for(scalar density, scalar energy) const
 
 void Simulation3D::prepare()
 {
-	const auto begin = std::chrono::steady_clock::now();
-	build_octree();
-	neighbor_grid_.build(particles_, minimum_smoothing_length());
-	densities_.assign(particles_.size(), 0.f);
-	pressures_.assign(particles_.size(), 0.f);
-	parallel_for_blocks(particles_.size(), [&](std::size_t block_begin, std::size_t block_end)
+	prepare_state(config_.enable_gravity, config_.enable_hydrodynamics);
+}
+
+void Simulation3D::prepare_state(
+	bool prepare_gravity,
+	bool prepare_hydrodynamics)
+{
+	const auto preparation_begin = std::chrono::steady_clock::now();
+	const auto octree_begin = preparation_begin;
+	if (prepare_gravity)
+		build_octree();
+	else
 	{
-		std::vector<std::uint32_t> candidates;
-		candidates.reserve(128);
-		for (std::size_t index = block_begin; index < block_end; ++index)
+		octree_.clear();
+		octree_indices_.clear();
+	}
+	const auto octree_end = std::chrono::steady_clock::now();
+	last_octree_milliseconds_ = static_cast<scalar>(
+		std::chrono::duration<double, std::milli>(octree_end - octree_begin).count());
+
+	if (prepare_hydrodynamics)
+	{
+		const auto graph_begin = std::chrono::steady_clock::now();
+		build_neighbor_graph();
+		const auto graph_end = std::chrono::steady_clock::now();
+		last_neighbor_graph_milliseconds_ = static_cast<scalar>(
+			std::chrono::duration<double, std::milli>(graph_end - graph_begin).count());
+
+		densities_.assign(particles_.size(), 0.f);
+		pressures_.assign(particles_.size(), 0.f);
+		parallel_for_blocks(particles_.size(), [&](std::size_t block_begin, std::size_t block_end)
 		{
-			const Particle& source = particles_[index];
-			neighbor_grid_.collect(source.position, candidates);
-			scalar density = 0.f;
-			for (std::uint32_t candidate_index : candidates)
+			for (std::size_t index = block_begin; index < block_end; ++index)
 			{
-				const Particle& candidate = particles_[candidate_index];
-				const scalar support = std::max(
-					source.smoothing_length,
-					candidate.smoothing_length);
-				const Vec3 displacement = source.position - candidate.position;
-				if (displacement.get_norm2() <= support * support)
-					density += candidate.mass * wendland_c2(displacement, support);
+				const Particle& source = particles_[index];
+				scalar density = 0.f;
+				for (std::uint32_t offset = neighbor_offsets_[index];
+					offset < neighbor_offsets_[index + 1];
+					++offset)
+				{
+					const Particle& candidate = particles_[neighbors_[offset]];
+					density += candidate.mass * neighbor_weights_[offset];
+				}
+				densities_[index] = std::max(density, numerical_epsilon);
+				pressures_[index] = pressure_for(densities_[index], source.energy);
 			}
-			densities_[index] = std::max(density, numerical_epsilon);
-			pressures_[index] = pressure_for(densities_[index], source.energy);
-		}
-	});
+		});
+		last_density_milliseconds_ = static_cast<scalar>(
+			std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - graph_end).count());
+	}
+	else
+	{
+		neighbor_offsets_.clear();
+		neighbors_.clear();
+		neighbor_weights_.clear();
+		neighbor_grid_.clear();
+		densities_.assign(particles_.size(), 0.f);
+		pressures_.assign(particles_.size(), 0.f);
+		last_neighbor_graph_milliseconds_ = 0.f;
+		last_density_milliseconds_ = 0.f;
+	}
+
 	last_preparation_milliseconds_ = static_cast<scalar>(
 		std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - begin).count());
+			std::chrono::steady_clock::now() - preparation_begin).count());
 }
 
 scalar Simulation3D::step()
 {
-	prepare();
+	prepare_state(config_.enable_gravity, config_.enable_hydrodynamics);
 	if (particles_.empty())
+	{
+		last_force_milliseconds_ = 0.f;
 		return 0.f;
+	}
 
 	scalar time_step = config_.maximum_time_step;
 	for (const Particle& particle : particles_)
@@ -462,40 +646,41 @@ scalar Simulation3D::step()
 			time_step = std::min(time_step, particle.cfl_time);
 	time_step = std::max(time_step, 1e-8f);
 	next_particles_.resize(particles_.size());
+	const auto force_begin = std::chrono::steady_clock::now();
 
 	parallel_for_blocks(particles_.size(), [&](std::size_t block_begin, std::size_t block_end)
 	{
-		std::vector<std::uint32_t> candidates;
 		std::vector<std::int32_t> gravity_traversal;
-		candidates.reserve(128);
 		gravity_traversal.reserve(256);
 		for (std::size_t index = block_begin; index < block_end; ++index)
 		{
 			const Particle& current = particles_[index];
-			const scalar density_i = densities_[index];
-			const scalar pressure_i = pressures_[index];
-			const scalar sound_speed_i = std::sqrt(
-				config_.polytropic_exponent * pressure_i / density_i);
+			const scalar density_i = config_.enable_hydrodynamics ? densities_[index] : 1.f;
+			const scalar pressure_i = config_.enable_hydrodynamics ? pressures_[index] : 0.f;
+			const scalar sound_speed_i = config_.enable_hydrodynamics ? std::sqrt(
+				config_.polytropic_exponent * pressure_i / density_i) : 0.f;
 			Vec3 pressure_acceleration{};
 			scalar energy_rate = 0.f;
 			scalar maximum_mu = 0.f;
-			std::uint32_t interactions = 1;
+			std::uint32_t interactions = config_.enable_hydrodynamics ?
+				1u : current.interaction_count;
 
 			if (config_.enable_hydrodynamics)
 			{
-				neighbor_grid_.collect(current.position, candidates);
-				for (std::uint32_t candidate_index : candidates)
+				for (std::uint32_t offset = neighbor_offsets_[index];
+					offset < neighbor_offsets_[index + 1];
+					++offset)
 				{
+					const std::uint32_t candidate_index = neighbors_[offset];
 					if (candidate_index == index)
 						continue;
+					// Adapt h_i from neighbors inside i's own support. Counting the
+					// entire symmetric broad phase lets large-h neighbors force h_i
+					// downward even when they are outside its kernel.
+					if (neighbor_weights_[offset] > 0.f)
+						++interactions;
 					const Particle& neighbor = particles_[candidate_index];
 					const Vec3 position_difference = current.position - neighbor.position;
-					const scalar broad_support = std::max(
-						current.smoothing_length,
-						neighbor.smoothing_length);
-					if (position_difference.get_norm2() <= broad_support * broad_support)
-						++interactions;
-
 					const scalar smoothing_length =
 						0.5f * (current.smoothing_length + neighbor.smoothing_length);
 					const scalar distance_squared = position_difference.get_norm2();
@@ -543,18 +728,22 @@ scalar Simulation3D::step()
 				gravity_traversal) - pressure_acceleration;
 			updated.velocity += time_step * updated.acceleration;
 			updated.position += time_step * updated.velocity;
-			updated.energy = std::max(
-				current.energy + time_step * energy_rate,
-				numerical_epsilon);
+			if (config_.enable_hydrodynamics)
+				updated.energy = std::max(
+					current.energy + time_step * energy_rate,
+					numerical_epsilon);
 			updated.interaction_count = interactions;
 
-			const scalar target_ratio = static_cast<scalar>(config_.desired_neighbors) /
-				static_cast<scalar>(std::max<std::uint32_t>(interactions, 1));
-			const scalar target_smoothing = current.smoothing_length * std::cbrt(target_ratio);
-			updated.smoothing_length = std::clamp(
-				0.5f * (current.smoothing_length + target_smoothing),
-				minimum_smoothing_length(),
-				reference_domain_size_ * 0.5f);
+			if (config_.enable_hydrodynamics)
+			{
+				const scalar target_ratio = static_cast<scalar>(config_.desired_neighbors) /
+					static_cast<scalar>(std::max<std::uint32_t>(interactions, 1));
+				const scalar target_smoothing = current.smoothing_length * std::cbrt(target_ratio);
+				updated.smoothing_length = std::clamp(
+					0.5f * (current.smoothing_length + target_smoothing),
+					minimum_smoothing_length(),
+					reference_domain_size_ * 0.5f);
+			}
 
 			const scalar resolved_length = std::max(
 				updated.smoothing_length,
@@ -583,6 +772,9 @@ scalar Simulation3D::step()
 			next_particles_[index] = updated;
 		}
 	});
+	last_force_milliseconds_ = static_cast<scalar>(
+		std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - force_begin).count());
 
 	particles_.swap(next_particles_);
 	total_time_ += time_step;
@@ -602,10 +794,16 @@ SimulationSnapshot Simulation3D::make_snapshot(
 	result.step_milliseconds = step_milliseconds;
 	result.preparation_milliseconds = preparation_milliseconds > 0.f ?
 		preparation_milliseconds : last_preparation_milliseconds_;
+	result.octree_milliseconds = last_octree_milliseconds_;
+	result.neighbor_graph_milliseconds = last_neighbor_graph_milliseconds_;
+	result.density_milliseconds = last_density_milliseconds_;
+	result.force_milliseconds = last_force_milliseconds_;
 	result.step = step_count_;
 	result.octree_nodes = octree_.size();
 	result.occupied_cells = neighbor_grid_.occupied_cell_count();
+	result.smoothing_length_floor = minimum_smoothing_length();
 	scalar total_mass = 0.f;
+	double total_interactions = 0.;
 	for (std::size_t index = 0; index < particles_.size(); ++index)
 	{
 		const Particle& particle = particles_[index];
@@ -622,6 +820,22 @@ SimulationSnapshot Simulation3D::make_snapshot(
 		result.maximum_density = std::max(result.maximum_density, density);
 		result.maximum_speed = std::max(result.maximum_speed, speed);
 		result.maximum_acceleration = std::max(result.maximum_acceleration, acceleration);
+		if (index == 0)
+			result.minimum_smoothing_length = particle.smoothing_length;
+		else
+			result.minimum_smoothing_length = std::min(
+				result.minimum_smoothing_length,
+				particle.smoothing_length);
+		result.maximum_smoothing_length = std::max(
+			result.maximum_smoothing_length,
+			particle.smoothing_length);
+		if (index < densities_.size() && index < pressures_.size() &&
+			densities_[index] > 0.f)
+			result.maximum_sound_speed = std::max(
+				result.maximum_sound_speed,
+				std::sqrt(config_.polytropic_exponent * pressures_[index] /
+					densities_[index]));
+		total_interactions += particle.interaction_count;
 		result.momentum += particle.mass * particle.velocity;
 		total_mass += particle.mass;
 		result.finite = result.finite && finite(particle.position) &&
@@ -629,6 +843,9 @@ SimulationSnapshot Simulation3D::make_snapshot(
 			std::isfinite(particle.mass) && std::isfinite(particle.smoothing_length) &&
 			std::isfinite(particle.energy);
 	}
+	if (!particles_.empty())
+		result.average_interactions = static_cast<scalar>(
+			total_interactions / static_cast<double>(particles_.size()));
 	(void)total_mass;
 	return result;
 }

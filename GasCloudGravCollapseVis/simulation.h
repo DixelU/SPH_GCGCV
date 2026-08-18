@@ -48,8 +48,9 @@ struct SimulationConfig
 	scalar heat_capacity_ratio = 5.f / 3.f;
 	scalar polytropic_exponent = 5.f / 3.f;
 	scalar polytropic_strength = 0.1f;
-	scalar barnes_hut_theta = 0.32f;
+	scalar barnes_hut_theta = 0.55f;
 	scalar courant_number = 0.3f;
+	scalar minimum_smoothing_fraction = 0.05f;
 	int desired_neighbors = 48;
 	bool enable_hydrodynamics = true;
 	bool enable_gravity = true;
@@ -94,12 +95,21 @@ struct SimulationSnapshot
 	scalar last_time_step = 0.f;
 	scalar step_milliseconds = 0.f;
 	scalar preparation_milliseconds = 0.f;
+	scalar octree_milliseconds = 0.f;
+	scalar neighbor_graph_milliseconds = 0.f;
+	scalar density_milliseconds = 0.f;
+	scalar force_milliseconds = 0.f;
 	std::uint64_t step = 0;
 	std::size_t octree_nodes = 0;
 	std::size_t occupied_cells = 0;
 	scalar maximum_density = 0.f;
 	scalar maximum_speed = 0.f;
 	scalar maximum_acceleration = 0.f;
+	scalar minimum_smoothing_length = 0.f;
+	scalar maximum_smoothing_length = 0.f;
+	scalar smoothing_length_floor = 0.f;
+	scalar maximum_sound_speed = 0.f;
+	scalar average_interactions = 0.f;
 	Vec3 momentum{};
 	bool finite = true;
 };
@@ -152,7 +162,11 @@ private:
 	{
 	public:
 		void build(const std::vector<Particle>& particles, scalar fallback_cell_size);
-		void collect(const Vec3& position, std::vector<std::uint32_t>& result) const;
+		void collect(
+			const Vec3& position,
+			scalar radius,
+			std::vector<std::uint32_t>& result) const;
+		void clear() noexcept { cells_.clear(); }
 		[[nodiscard]] std::size_t occupied_cell_count() const noexcept { return cells_.size(); }
 
 	private:
@@ -175,6 +189,8 @@ private:
 	};
 
 	void build_octree();
+	void build_neighbor_graph();
+	void prepare_state(bool prepare_gravity, bool prepare_hydrodynamics);
 	std::int32_t build_octree_node(
 		std::uint32_t begin,
 		std::uint32_t end,
@@ -191,16 +207,24 @@ private:
 	std::vector<Particle> next_particles_;
 	std::vector<scalar> densities_;
 	std::vector<scalar> pressures_;
+	std::vector<std::uint32_t> neighbor_offsets_;
+	std::vector<std::uint32_t> neighbors_;
+	std::vector<scalar> neighbor_weights_;
 	std::vector<std::uint32_t> octree_indices_;
 	std::vector<std::uint32_t> octree_scratch_;
 	std::vector<OctreeNode> octree_;
 	NeighborGrid neighbor_grid_;
 	SimulationConfig config_;
 	scalar reference_domain_size_ = 100.f;
+	scalar reference_smoothing_length_ = 1.f;
 	scalar total_time_ = 0.f;
 	scalar last_time_step_ = 0.f;
 	std::uint64_t step_count_ = 0;
 	scalar last_preparation_milliseconds_ = 0.f;
+	scalar last_octree_milliseconds_ = 0.f;
+	scalar last_neighbor_graph_milliseconds_ = 0.f;
+	scalar last_density_milliseconds_ = 0.f;
+	scalar last_force_milliseconds_ = 0.f;
 };
 
 class SimulationRunner

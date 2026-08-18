@@ -36,10 +36,16 @@ msbuild GasCloudGravCollapseVis.sln /m /p:Configuration=Release /p:Platform=x64
 - `F` resets the camera.
 - The field selector colors particles by density, energy, speed,
   acceleration, or any velocity component.
+- Logarithmic scaling works for both scalar and signed velocity fields, and
+  the color map can be inverted independently.
 
 The renderer uses depth-tested round point sprites. The outlined cube shows
 the initial reference domain; the physical simulation itself uses open space
 and a dynamic octree rather than artificial periodic wrapping.
+
+The adaptive smoothing-length floor is expressed as a fraction of the initial
+median smoothing length. This keeps the maximum resolvable density consistent
+when the particle count—and therefore the mass per particle—changes.
 
 ## Command-line validation
 
@@ -47,8 +53,11 @@ and a dynamic octree rather than artificial periodic wrapping.
 # Numerical and conservation tests
 x64\Release\GasCloudGravCollapseVis.exe --self-test
 
-# Headless simulation: steps, seed, particles
+# Headless simulation: steps, seed, particles, hydro (0/1), gravity (0/1)
 x64\Release\GasCloudGravCollapseVis.exe --headless 100 1 1000
+
+# Isolate the 50k gravity-only path
+x64\Release\GasCloudGravCollapseVis.exe --headless 10 1 50000 0 1
 
 # Cubic-lattice preparation/iteration benchmark: particles, steps, support
 x64\Release\GasCloudGravCollapseVis.exe --benchmark-preparation 10000 0 2.5
@@ -59,8 +68,9 @@ x64\Release\GasCloudGravCollapseVis.exe --gui-smoke-test
 
 ## Architecture
 
-- `simulation.h/.cpp`: particles, 3D Wendland C2 kernel, spatial hash,
-  Barnes-Hut octree, SPH integration, snapshots, and worker thread.
+- `simulation.h/.cpp`: particles, 3D Wendland C2 kernel, median-scale spatial
+  hash with a cached symmetric neighbor graph, Barnes-Hut octree, SPH
+  integration, snapshots, and worker thread.
 - `renderer.h/.cpp`: orbit camera, shader management, VBOs, point sprites,
   field coloring, and domain guide.
 - `GasCloudGravCollapseVis.cpp`: Dear ImGui application and command-line test

@@ -211,10 +211,11 @@ void main()
 [[nodiscard]] std::array<float, 3> sequential_color(float value)
 {
 	const float t = std::clamp(value, 0.f, 1.f);
-	const std::array<float, 3> deep{0.035f, 0.08f, 0.32f};
-	const std::array<float, 3> cyan{0.02f, 0.72f, 0.82f};
-	const std::array<float, 3> yellow{1.f, 0.82f, 0.12f};
-	const std::array<float, 3> white{1.f, 0.98f, 0.92f};
+	const std::array<float, 3> deep{0.015f, 0.025f, 0.16f};
+	const std::array<float, 3> violet{0.38f, 0.055f, 0.62f};
+	const std::array<float, 3> magenta{0.88f, 0.075f, 0.34f};
+	const std::array<float, 3> orange{1.f, 0.43f, 0.035f};
+	const std::array<float, 3> yellow{1.f, 0.93f, 0.20f};
 	auto blend = [](const auto& a, const auto& b, float amount)
 	{
 		return std::array<float, 3>{
@@ -222,19 +223,31 @@ void main()
 			a[1] + (b[1] - a[1]) * amount,
 			a[2] + (b[2] - a[2]) * amount};
 	};
-	if (t < 0.4f)
-		return blend(deep, cyan, t / 0.4f);
-	if (t < 0.8f)
-		return blend(cyan, yellow, (t - 0.4f) / 0.4f);
-	return blend(yellow, white, (t - 0.8f) / 0.2f);
+	if (t < 0.25f)
+		return blend(deep, violet, t / 0.25f);
+	if (t < 0.55f)
+		return blend(violet, magenta, (t - 0.25f) / 0.30f);
+	if (t < 0.80f)
+		return blend(magenta, orange, (t - 0.55f) / 0.25f);
+	return blend(orange, yellow, (t - 0.80f) / 0.20f);
 }
 
 [[nodiscard]] std::array<float, 3> diverging_color(float value)
 {
 	const float t = std::clamp(value, -1.f, 1.f);
+	const std::array<float, 3> neutral{0.075f, 0.09f, 0.14f};
+	const std::array<float, 3> negative{0.04f, 0.60f, 1.f};
+	const std::array<float, 3> positive{1.f, 0.20f, 0.035f};
+	auto blend = [](const auto& a, const auto& b, float amount)
+	{
+		return std::array<float, 3>{
+			a[0] + (b[0] - a[0]) * amount,
+			a[1] + (b[1] - a[1]) * amount,
+			a[2] + (b[2] - a[2]) * amount};
+	};
 	if (t < 0.f)
-		return {0.18f + 0.72f * (1.f + t), 0.35f + 0.55f * (1.f + t), 1.f};
-	return {1.f, 0.90f - 0.70f * t, 0.90f - 0.78f * t};
+		return blend(neutral, negative, -t);
+	return blend(neutral, positive, t);
 }
 
 } // namespace
@@ -366,8 +379,15 @@ void ParticleRenderer::upload_particles(
 {
 	staging_.resize(snapshot.particles.size());
 	float maximum_energy = 0.f;
+	std::array<float, 3> maximum_velocity_components{};
 	for (const sph::RenderParticle& particle : snapshot.particles)
+	{
 		maximum_energy = std::max(maximum_energy, std::abs(particle.energy));
+		for (std::size_t axis = 0; axis < maximum_velocity_components.size(); ++axis)
+			maximum_velocity_components[axis] = std::max(
+				maximum_velocity_components[axis],
+				std::abs(particle.velocity[axis]));
+	}
 	const float maximum_for_field = [&]
 	{
 		switch (settings.field)
@@ -376,9 +396,9 @@ void ParticleRenderer::upload_particles(
 			case sph::Field::energy: return maximum_energy;
 			case sph::Field::speed: return snapshot.maximum_speed;
 			case sph::Field::acceleration: return snapshot.maximum_acceleration;
-			case sph::Field::x_velocity:
-			case sph::Field::y_velocity:
-			case sph::Field::z_velocity: return snapshot.maximum_speed;
+			case sph::Field::x_velocity: return maximum_velocity_components[0];
+			case sph::Field::y_velocity: return maximum_velocity_components[1];
+			case sph::Field::z_velocity: return maximum_velocity_components[2];
 		}
 		return 1.f;
 	}();
@@ -399,9 +419,15 @@ void ParticleRenderer::upload_particles(
 			case sph::Field::z_velocity: value = particle.velocity[2]; signed_field = true; break;
 		}
 		float normalized = value / safe_maximum;
-		if (settings.logarithmic_scale && !signed_field)
-			normalized = std::log1p(std::max(normalized, 0.f) * 30.f) / std::log(31.f);
+		if (settings.logarithmic_scale)
+		{
+			const float magnitude = std::log1p(std::abs(normalized) * 30.f) /
+				std::log(31.f);
+			normalized = signed_field ? std::copysign(magnitude, normalized) : magnitude;
+		}
 		normalized *= settings.brightness;
+		if (settings.invert_color_map)
+			normalized = signed_field ? -normalized : 1.f - normalized;
 		const auto color = signed_field ? diverging_color(normalized) : sequential_color(normalized);
 		staging_[index] = {
 			{particle.position[0], particle.position[1], particle.position[2]},
